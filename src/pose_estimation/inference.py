@@ -1,6 +1,9 @@
 import cv2
 import mediapipe as mp
 
+# -----------------------------
+# Initialize MediaPipe Pose
+# -----------------------------
 mp_pose = mp.solutions.pose
 mp_draw = mp.solutions.drawing_utils
 
@@ -11,45 +14,70 @@ pose = mp_pose.Pose(
     min_tracking_confidence=0.5
 )
 
+# -----------------------------
+# Open USB Webcam
+# -----------------------------
 cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
     raise RuntimeError("Cannot open webcam")
 
-print("Webcam started! Press Q to quit.")
+print("====================================")
+print("  Stroke Rehab - Pose Estimation")
+print("  Press Q to quit")
+print("====================================")
 
 while True:
+
     success, frame = cap.read()
+
     if not success:
         break
 
-    # Mirror the camera (selfie view)
+    # Mirror the camera for natural interaction
     frame = cv2.flip(frame, 1)
 
+    # Convert BGR → RGB
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Pose estimation
     results = pose.process(rgb)
 
     if results.pose_landmarks:
 
-        landmarks = results.pose_landmarks.landmark
-
-        ls = landmarks[11]   # Left shoulder
-        le = landmarks[13]   # Left elbow
-        lw = landmarks[15]   # Left wrist
-
-        print(
-            f"Shoulder ({ls.x:.2f}, {ls.y:.2f})  "
-            f"Elbow ({le.x:.2f}, {le.y:.2f})  "
-            f"Wrist ({lw.x:.2f}, {lw.y:.2f})"
-        )
-
+        # Draw skeleton
         mp_draw.draw_landmarks(
             frame,
             results.pose_landmarks,
-            mp_pose.POSE_CONNECTIONS
+            mp_pose.POSE_CONNECTIONS,
+            mp_draw.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
+            mp_draw.DrawingSpec(color=(255,255,255), thickness=2)
         )
 
-    cv2.imshow("Stroke Rehab - Pose Debug", frame)
+        h, w, _ = frame.shape
+
+        print("\n--------- FRAME ---------")
+
+        for idx, landmark in enumerate(results.pose_landmarks.landmark):
+
+            x = int(landmark.x * w)
+            y = int(landmark.y * h)
+            z = round(landmark.z, 3)
+
+            print(f"Landmark {idx:02d}: ({x:3d}, {y:3d}, {z})")
+
+            # Draw landmark number beside each point
+            cv2.putText(
+                frame,
+                str(idx),
+                (x + 5, y - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                (0, 255, 255),
+                1
+            )
+
+    cv2.imshow("Stroke Rehab - Pose Estimation", frame)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
