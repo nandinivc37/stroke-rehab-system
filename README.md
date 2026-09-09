@@ -26,3 +26,9 @@ This project aims to provide objective rehabilitation feedback without requiring
 ## Repository structure
 
 `src/pose_estimation` contains the first completed module for real-time landmark detection using a webcam.
+
+## Team Members
+
+- Nandini V C
+- Chaithanya S
+- Chaithranjali Athavar
