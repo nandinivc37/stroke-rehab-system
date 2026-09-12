@@ -1,9 +1,21 @@
 import cv2
 import mediapipe as mp
 
-# -----------------------------
-# Initialize MediaPipe Pose
-# -----------------------------
+
+# ---------------------------------
+# Open USB Webcam
+# ---------------------------------
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    raise RuntimeError("Cannot open webcam")
+
+# if not cap.isOpened():
+#     raise RuntimeError("Cannot open webcam")
+
+# ---------------------------------
+# MediaPipe Pose Initialization
+# ---------------------------------
 mp_pose = mp.solutions.pose
 mp_draw = mp.solutions.drawing_utils
 
@@ -14,34 +26,45 @@ pose = mp_pose.Pose(
     min_tracking_confidence=0.5
 )
 
-# -----------------------------
-# Open USB Webcam
-# -----------------------------
-cap = cv2.VideoCapture(0)
 
-if not cap.isOpened():
-    raise RuntimeError("Cannot open webcam")
+print("=" * 45)
+print(" Stroke Rehab - Pose Estimation")
+print(" Press Q or ESC to quit")
+print("=" * 45)
 
-print("====================================")
-print("  Stroke Rehab - Pose Estimation")
-print("  Press Q to quit")
-print("====================================")
+window_name = "Stroke Rehab - Pose Estimation"
+
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.resizeWindow(window_name, 1280, 720)
 
 while True:
 
     success, frame = cap.read()
 
+    print(success, frame.mean() if success else "NO FRAME")
+
     if not success:
         break
 
-    # Mirror the camera for natural interaction
+    # Mirror image
     frame = cv2.flip(frame, 1)
 
-    # Convert BGR → RGB
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
     # Pose estimation
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = pose.process(rgb)
+
+
+    
+    # RAW CAMERA BLOCK
+    # cv2.putText(
+    #     frame,
+    #     "RAW CAMERA",
+    #     (30, 50),
+    #     cv2.FONT_HERSHEY_SIMPLEX,
+    #     1,
+    #     (0, 255, 0),
+    #     2
+    # )
 
     if results.pose_landmarks:
 
@@ -50,36 +73,62 @@ while True:
             frame,
             results.pose_landmarks,
             mp_pose.POSE_CONNECTIONS,
-            mp_draw.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
-            mp_draw.DrawingSpec(color=(255,255,255), thickness=2)
+            mp_draw.DrawingSpec(
+                color=(0, 255, 0),
+                thickness=2,
+                circle_radius=3
+            ),
+            mp_draw.DrawingSpec(
+                color=(255, 255, 255),
+                thickness=2
+            )
         )
 
         h, w, _ = frame.shape
+        lm = results.pose_landmarks.landmark
 
-        print("\n--------- FRAME ---------")
+        # -------- Left Arm --------
+        shoulder = lm[11]
+        elbow = lm[13]
+        wrist = lm[15]
 
-        for idx, landmark in enumerate(results.pose_landmarks.landmark):
+        sx, sy = int(shoulder.x * w), int(shoulder.y * h)
+        ex, ey = int(elbow.x * w), int(elbow.y * h)
+        wx, wy = int(wrist.x * w), int(wrist.y * h)
 
-            x = int(landmark.x * w)
-            y = int(landmark.y * h)
-            z = round(landmark.z, 3)
+        # Keep text inside the camera frame
+        sx_text = min(sx + 10, w - 120), max(sy - 10, 20)
+        ex_text = min(ex + 10, w - 120), max(ey - 10, 20)
+        wx_text = min(wx + 10, w - 120), max(wy - 10, 20)
 
-            print(f"Landmark {idx:02d}: ({x:3d}, {y:3d}, {z})")
+        # Console output
+        print(
+            f"Shoulder: ({sx}, {sy}) | "
+            f"Elbow: ({ex}, {ey}) | "
+            f"Wrist: ({wx}, {wy})"
+        )
 
-            # Draw landmark number beside each point
-            cv2.putText(
-                frame,
-                str(idx),
-                (x + 5, y - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
-                (0, 255, 255),
-                1
-            )
+        # Display coordinates on screen
+        cv2.putText(frame, f"S:{sx},{sy}", sx_text,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 2)
 
-    cv2.imshow("Stroke Rehab - Pose Estimation", frame)
+        cv2.putText(frame, f"E:{ex},{ey}", ex_text,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,200,0), 2)
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+        cv2.putText(frame, f"W:{wx},{wy}", wx_text,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,100,255), 2)
+
+    # Resize before displaying (fills window)
+    display = cv2.resize(frame, (1280, 720))
+
+    cv2.imshow(window_name, display)
+
+    key = cv2.waitKeyEx(1)
+
+    if key in [ord("q"), ord("Q"), 27]:
+        break
+
+    if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
         break
 
 cap.release()

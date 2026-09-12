@@ -10,8 +10,12 @@ while True:
     frame = cv2.flip(frame, 1)
     cv2.imshow("Camera Test", frame)
 
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord("q"):
+    key = cv2.waitKeyEx(1)
+
+    if key in [ord('q'), ord('Q'), 27]:
+        break
+
+    if cv2.getWindowProperty("Camera Test", cv2.WND_PROP_VISIBLE) < 1:
         break
 
 cap.release()
