@@ -3,6 +3,10 @@ import mediapipe as mp
 
 from src.utils.angles import calculate_angle
 
+from src.action_recognition.rep_counter import RepCounter
+
+
+
 # ---------------------------------
 # Open USB Webcam
 # ---------------------------------
@@ -27,6 +31,10 @@ pose = mp_pose.Pose(
     min_detection_confidence=0.7,
     min_tracking_confidence=0.7
 )
+
+
+#ceating object of rep_counter class
+rep_counter = RepCounter()
 
 
 print("=" * 45)
@@ -126,6 +134,8 @@ while True:
             wrist_point
         )
 
+        reps, stage = rep_counter.update(elbow_angle)
+
         # Keep text inside the camera frame
         sx_text = min(sx + 10, w - 120), max(sy - 10, 20)
         ex_text = min(ex + 10, w - 120), max(ey - 10, 20)
@@ -156,6 +166,26 @@ while True:
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (0, 255, 255),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Reps: {reps}",
+            (30, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Stage: {stage.upper()}",
+            (30, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 0),
             2
         )
 
