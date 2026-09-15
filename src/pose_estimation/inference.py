@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 
+from src.utils.angles import calculate_angle
 
 # ---------------------------------
 # Open USB Webcam
@@ -21,9 +22,10 @@ mp_draw = mp.solutions.drawing_utils
 
 pose = mp_pose.Pose(
     static_image_mode=False,
-    model_complexity=1,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
+    model_complexity=2,
+    smooth_landmarks=True,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7
 )
 
 
@@ -41,7 +43,7 @@ while True:
 
     success, frame = cap.read()
 
-    print(success, frame.mean() if success else "NO FRAME")
+    #print(success, frame.mean() if success else "NO FRAME")
 
     if not success:
         break
@@ -84,8 +86,19 @@ while True:
             )
         )
 
+        
+
         h, w, _ = frame.shape
         lm = results.pose_landmarks.landmark
+
+        #check wrist visibility
+        left = lm[15]
+        right = lm[16]
+        
+        print(
+            f"LEFT wrist: {left.visibility:.2f} | "
+            f"RIGHT wrist: {right.visibility:.2f}"
+        )
 
         # -------- Left Arm --------
         shoulder = lm[11]
@@ -96,6 +109,23 @@ while True:
         ex, ey = int(elbow.x * w), int(elbow.y * h)
         wx, wy = int(wrist.x * w), int(wrist.y * h)
 
+        # Highlight left arm joints
+        cv2.circle(frame, (sx, sy), 8, (0, 0, 255), -1)      # Shoulder
+        cv2.circle(frame, (ex, ey), 8, (255, 0, 0), -1)      # Elbow
+        cv2.circle(frame, (wx, wy), 8, (0, 255, 255), -1)    # Wrist
+
+        # Create 2D points
+        shoulder_point = (sx, sy)
+        elbow_point = (ex, ey)
+        wrist_point = (wx, wy)
+
+        # Calculate elbow flexion angle
+        elbow_angle = calculate_angle(
+            shoulder_point,
+            elbow_point,
+            wrist_point
+        )
+
         # Keep text inside the camera frame
         sx_text = min(sx + 10, w - 120), max(sy - 10, 20)
         ex_text = min(ex + 10, w - 120), max(ey - 10, 20)
@@ -103,8 +133,9 @@ while True:
 
         # Console output
         print(
-            f"Shoulder: ({sx}, {sy}) | "
-            f"Elbow: ({ex}, {ey}) | "
+            f"Elbow Angle: {elbow_angle}° | "
+            f"Shoulder: ({sx}, {sy}) "
+            f"Elbow: ({ex}, {ey}) "
             f"Wrist: ({wx}, {wy})"
         )
 
@@ -118,10 +149,19 @@ while True:
         cv2.putText(frame, f"W:{wx},{wy}", wx_text,
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,100,255), 2)
 
-    # Resize before displaying (fills window)
-    display = cv2.resize(frame, (1280, 720))
+        cv2.putText(
+            frame,
+            f"{elbow_angle} deg",
+            (ex + 15, ey + 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
+            2
+        )
 
-    cv2.imshow(window_name, display)
+
+    # Resize before displaying (fills window)
+    cv2.imshow(window_name, frame)
 
     key = cv2.waitKeyEx(1)
 
