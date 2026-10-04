@@ -8,6 +8,8 @@ __pycache__/
 # Generated outputs
 outputs/
 *.csv
+data/
 
 # VS Code
 .vscode/
+

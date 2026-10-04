@@ -4,6 +4,7 @@ import mediapipe as mp
 from src.utils.angles import calculate_angle
 
 from src.action_recognition.rep_counter import RepCounter
+from src.database.db import save_session
 
 
 
@@ -46,6 +47,12 @@ window_name = "Stroke Rehab - Pose Estimation"
 
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 cv2.resizeWindow(window_name, 1280, 720)
+
+patient_id = 1                  # temporary
+exercise = "Elbow Flexion"
+
+max_angle = 0
+min_angle = 180
 
 while True:
 
@@ -134,6 +141,9 @@ while True:
             wrist_point
         )
 
+        max_angle = max(max_angle, elbow_angle)
+        min_angle = min(min_angle, elbow_angle)
+
         reps, stage = rep_counter.update(elbow_angle)
 
         # Keep text inside the camera frame
@@ -196,6 +206,19 @@ while True:
     key = cv2.waitKeyEx(1)
 
     if key in [ord("q"), ord("Q"), 27]:
+
+        save_session(
+            patient_id,
+            exercise,
+            reps,
+            max_angle,
+            min_angle
+        )
+
+        print("\nSession Saved Successfully!")
+        print(f"Reps: {reps}")
+        print(f"ROM: {min_angle:.1f}° - {max_angle:.1f}°")
+
         break
 
     if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
