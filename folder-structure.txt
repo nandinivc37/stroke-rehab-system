@@ -1,0 +1,96 @@
+stroke-rehab-ai/
+│
+├── README.md
+├── requirements.txt
+├── config.py                    # Global paths & parameters
+├── main.py                      # Runs complete pipeline
+│
+├── assets/                      # Static files
+│   ├── exercise_protocols/
+│   ├── icons/
+│   └── audio/
+│
+├── models/                      # Pretrained ML models
+│   ├── rtmpose/
+│   ├── action_model/
+│   ├── quality_model/
+│   └── compensation_model/
+│
+├── data/
+│   ├── raw_videos/
+│   ├── processed_landmarks/
+│   ├── datasets/
+│   └── patient_history/
+│
+├── src/
+│   ├── camera/
+│   │   ├── webcam.py
+│   │   └── video_loader.py
+│   │
+│   ├── pose_estimation/         # MODULE 1
+│   │   ├── inference.py
+│   │   ├── visualize.py
+│   │   ├── extract_landmarks.py
+│   │   └── save_landmarks.py
+│   │
+│   ├── preprocessing/           # MODULE 2
+│   │   ├── normalize.py
+│   │   ├── smooth.py
+│   │   ├── interpolate.py
+│   │   └── joint_angles.py
+│   │
+│   ├── action_recognition/      # MODULE 3
+│   │   ├── dataset.py
+│   │   ├── model.py
+│   │   ├── inference.py
+│   │   └── predict.py
+│   │
+│   ├── quality_assessment/      # MODULE 4
+│   │   ├── rom.py
+│   │   ├── smoothness.py
+│   │   ├── trajectory.py
+│   │   └── score.py
+│   │
+│   ├── compensation_detection/  # MODULE 5
+│   │   ├── trunk.py
+│   │   ├── shoulder.py
+│   │   ├── posture_rules.py
+│   │   └── detect.py
+│   │
+│   ├── assessment/              # MODULE 6
+│   │   ├── fusion.py
+│   │   ├── rehab_score.py
+│   │   └── progress.py
+│   │
+│   ├── feedback/                # MODULE 7
+│   │   ├── voice.py
+│   │   ├── visual.py
+│   │   ├── corrective_text.py
+│   │   └── adaptive_controller.py
+│   │
+│   └── utils/
+│       ├── logger.py
+│       ├── constants.py
+│       └── helpers.py
+│
+├── ui/
+│   ├── dashboard.py
+│   ├── patient_screen.py
+│   └── therapist_screen.py
+│
+├── outputs/
+│   ├── videos/
+│   ├── skeleton_videos/
+│   ├── csv/
+│   ├── reports/
+│   └── session_logs/
+│
+├── notebooks/
+│   ├── module1_rtmpose.ipynb
+│   ├── module2_preprocessing.ipynb
+│   └── experiments.ipynb
+│
+└── tests/
+    ├── test_pose.py
+    ├── test_quality.py
+    └── test_feedback.py

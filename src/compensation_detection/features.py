@@ -155,6 +155,52 @@ def extract_frame_features(frame):
     )
 
     # -------------------------------------------------
+    # Shoulder elevation features
+    # -------------------------------------------------
+
+    # Shoulder position relative to the spine.
+    left_shoulder_vertical_offset = (
+        shoulder_left[1] - spine_shoulder[1]
+    )
+
+    right_shoulder_vertical_offset = (
+        shoulder_right[1] - spine_shoulder[1]
+    )
+
+    # Average elevation of both shoulders relative
+    # to the upper spine.
+    shoulder_center = (
+        shoulder_left + shoulder_right
+    ) / 2.0
+
+    shoulder_center_vertical_offset = (
+        shoulder_center[1] - spine_shoulder[1]
+    )
+
+    # Distance from each shoulder to the upper spine.
+    left_shoulder_spine_distance = distance(
+        shoulder_left,
+        spine_shoulder
+    )
+
+    right_shoulder_spine_distance = distance(
+        shoulder_right,
+        spine_shoulder
+    )
+
+    # Angle between the upper-arm direction and
+    # the trunk direction.
+    left_upper_arm_angle = vector_angle(
+        vector(shoulder_left, elbow_left),
+        vector(spine_shoulder, shoulder_left)
+    )
+
+    right_upper_arm_angle = vector_angle(
+        vector(shoulder_right, elbow_right),
+        vector(spine_shoulder, shoulder_right)
+    )
+
+    # -------------------------------------------------
     # Forward trunk displacement
     # -------------------------------------------------
 
@@ -202,4 +248,25 @@ def extract_frame_features(frame):
 
         "trunk_length":
             trunk_length,
+
+	 "left_shoulder_vertical_offset":
+            left_shoulder_vertical_offset,
+
+        "right_shoulder_vertical_offset":
+            right_shoulder_vertical_offset,
+
+        "shoulder_center_vertical_offset":
+            shoulder_center_vertical_offset,
+
+        "left_shoulder_spine_distance":
+            left_shoulder_spine_distance,
+
+        "right_shoulder_spine_distance":
+            right_shoulder_spine_distance,
+
+        "left_upper_arm_angle":
+            left_upper_arm_angle,
+
+        "right_upper_arm_angle":
+            right_upper_arm_angle,
     }
