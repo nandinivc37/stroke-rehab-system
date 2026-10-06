@@ -1,0 +1,47 @@
+{
+  "model": "2-layer Bidirectional LSTM",
+  "input_shape": [
+    20,
+    21
+  ],
+  "hidden_size": 64,
+  "num_layers": 2,
+  "dropout": 0.3,
+  "batch_size": 128,
+  "max_epochs": 40,
+  "best_epoch": 4,
+  "best_macro_f1": 0.5484236537132856,
+  "final_accuracy": 0.7771874481155571,
+  "final_macro_f1": 0.5484236537132856,
+  "final_weighted_f1": 0.7759916513917858,
+  "test_loss": 1.210508200287245,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce MX350",
+  "torch_version": "2.14.0+cu126",
+  "torch_cuda": "12.6",
+  "train_windows": 39961,
+  "test_windows": 12046,
+  "train_participants": [
+    "H03",
+    "H04",
+    "H05",
+    "H07",
+    "H08",
+    "H09",
+    "H10",
+    "P01",
+    "P03",
+    "P04",
+    "P05",
+    "P06",
+    "P07",
+    "P08",
+    "P09"
+  ],
+  "test_participants": [
+    "H01",
+    "H02",
+    "H06",
+    "P02"
+  ]
+}

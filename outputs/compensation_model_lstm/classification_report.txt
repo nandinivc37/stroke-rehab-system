@@ -1,0 +1,10 @@
+                    precision    recall  f1-score   support
+
+   No Compensation     0.8930    0.9165    0.9046      8540
+Shoulder Elevation     0.2624    0.3314    0.2929       845
+    Trunk Rotation     0.6342    0.5017    0.5603      1728
+      Lean Forward     0.4581    0.4159    0.4360       933
+
+          accuracy                         0.7772     12046
+         macro avg     0.5619    0.5414    0.5484     12046
+      weighted avg     0.7779    0.7772    0.7760     12046
