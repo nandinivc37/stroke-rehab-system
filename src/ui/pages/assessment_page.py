@@ -1,3 +1,5 @@
+
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QLabel,
     QVBoxLayout,
@@ -9,19 +11,26 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMessageBox,
     QWidget,
+    QFrame,
 )
 
 from src.database.db import (
     get_all_patients,
     get_affected_areas,
     save_clinical_assessment,
+    save_recommendation,
+    update_recommendation_status,
 )
+
+from src.assessment.recommendation import recommend_exercise
 
 
 class AssessmentPage(QWidget):
 
     def __init__(self):
         super().__init__()
+
+        self.current_recommendation_id = None
 
         self.setStyleSheet("""
             QLabel {
@@ -38,7 +47,21 @@ class AssessmentPage(QWidget):
                 padding: 7px;
             }
 
-                        QPushButton {
+            QComboBox:focus,
+            QDoubleSpinBox:focus,
+            QTextEdit:focus {
+                border: 1px solid #2563eb;
+            }
+
+            QComboBox QAbstractItemView {
+                color: #1f2937;
+                background-color: #ffffff;
+                selection-color: #172554;
+                selection-background-color: #dbeafe;
+                border: 1px solid #d1d5db;
+            }
+
+            QPushButton {
                 color: #374151;
                 background-color: #ffffff;
                 border: 1px solid #d1d5db;
@@ -62,27 +85,20 @@ class AssessmentPage(QWidget):
                 background-color: #1d4ed8;
             }
 
-            QComboBox:focus,
-            QDoubleSpinBox:focus,
-            QTextEdit:focus {
-                border: 1px solid #2563eb;
-            }
-
-            QComboBox QAbstractItemView {
-                color: #1f2937;
+            QFrame#recommendationCard {
                 background-color: #ffffff;
-                selection-color: #172554;
-                selection-background-color: #dbeafe;
+                border: 1px solid #bfdbfe;
+                border-radius: 10px;
             }
         """)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(45, 40, 45, 40)
-        layout.setSpacing(20)
+        layout.setSpacing(18)
 
-        # -------------------------
+        # -------------------------------------------------
         # Header
-        # -------------------------
+        # -------------------------------------------------
 
         title = QLabel("Clinical Assessment")
         title.setObjectName("pageTitle")
@@ -96,9 +112,9 @@ class AssessmentPage(QWidget):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        # -------------------------
-        # Patient selection
-        # -------------------------
+        # -------------------------------------------------
+        # Assessment form
+        # -------------------------------------------------
 
         form = QFormLayout()
         form.setSpacing(14)
@@ -114,10 +130,7 @@ class AssessmentPage(QWidget):
 
         form.addRow("Patient:", self.patient_input)
 
-        # -------------------------
         # Diagnosis
-        # -------------------------
-
         self.diagnosis_input = QComboBox()
         self.diagnosis_input.addItem("Select diagnosis")
         self.diagnosis_input.addItems([
@@ -128,10 +141,7 @@ class AssessmentPage(QWidget):
 
         form.addRow("Diagnosis:", self.diagnosis_input)
 
-        # -------------------------
         # Impairment
-        # -------------------------
-
         self.impairment_input = QComboBox()
         self.impairment_input.addItem("Select impairment")
         self.impairment_input.addItems([
@@ -144,10 +154,7 @@ class AssessmentPage(QWidget):
 
         form.addRow("Impairment:", self.impairment_input)
 
-        # -------------------------
         # Baseline ROM
-        # -------------------------
-
         self.rom_input = QDoubleSpinBox()
         self.rom_input.setRange(0.0, 360.0)
         self.rom_input.setDecimals(1)
@@ -156,10 +163,7 @@ class AssessmentPage(QWidget):
 
         form.addRow("Baseline ROM:", self.rom_input)
 
-        # -------------------------
         # Restrictions
-        # -------------------------
-
         self.restrictions_input = QComboBox()
         self.restrictions_input.addItem("Select restriction")
         self.restrictions_input.addItems([
@@ -171,51 +175,174 @@ class AssessmentPage(QWidget):
 
         form.addRow("Restrictions:", self.restrictions_input)
 
-        # -------------------------
         # Clinical notes
-        # -------------------------
-
         self.notes_input = QTextEdit()
         self.notes_input.setPlaceholderText(
             "Additional clinical observations..."
         )
-        self.notes_input.setFixedHeight(100)
+        self.notes_input.setFixedHeight(90)
 
         form.addRow("Clinical Notes:", self.notes_input)
 
         layout.addLayout(form)
 
-        # -------------------------
-        # Patient context
-        # -------------------------
+        # -------------------------------------------------
+        # Affected area
+        # -------------------------------------------------
 
         self.area_label = QLabel(
             "Affected area: Select a patient"
         )
+
+        self.area_label.setTextFormat(Qt.TextFormat.RichText)
         self.area_label.setStyleSheet(
-            "color: #1d4ed8; font-weight: bold;"
+            "color: #374151; "
+            "font-size: 14px; "
+            "padding-top: 4px; "
+            "padding-bottom: 4px;"
         )
+
+        self.area_label.setWordWrap(True)
+
+        layout.addWidget(self.area_label)
+        layout.addSpacing(4)
+
+        self.area_label.setTextFormat(Qt.TextFormat.RichText)
+        self.area_label.setStyleSheet(
+            "color: #374151;"
+        )
+        self.area_label.setWordWrap(True)
 
         layout.addWidget(self.area_label)
 
-        # -------------------------
-        # Buttons
-        # -------------------------
+        # -------------------------------------------------
+        # Save / Reset
+        # -------------------------------------------------
 
         buttons = QHBoxLayout()
         buttons.addStretch()
 
-        clear_button = QPushButton("Reset Form")
-        clear_button.clicked.connect(self.clear_form)
+        reset_button = QPushButton("Reset Form")
+        reset_button.clicked.connect(self.clear_form)
 
         save_button = QPushButton("Save Assessment")
         save_button.setObjectName("primaryButton")
         save_button.clicked.connect(self.save_assessment)
 
-        buttons.addWidget(clear_button)
+        buttons.addWidget(reset_button)
         buttons.addWidget(save_button)
 
         layout.addLayout(buttons)
+
+        # -------------------------------------------------
+        # Recommendation card
+        # -------------------------------------------------
+
+        self.recommendation_card = QFrame()
+
+        layout.addSpacing(8)
+        self.recommendation_card.setObjectName(
+            "recommendationCard"
+        )
+        
+
+        recommendation_layout = QVBoxLayout(
+            self.recommendation_card
+        )
+
+        recommendation_layout.setContentsMargins(
+            20, 18, 20, 18
+        )
+
+        recommendation_layout.setSpacing(8)
+
+        recommendation_title = QLabel(
+            "AI Exercise Recommendation"
+        )
+
+        recommendation_title.setStyleSheet(
+            "font-size: 18px; "
+            "font-weight: bold; "
+            "color: #172554;"
+        )
+
+        recommendation_layout.addWidget(
+            recommendation_title
+        )
+
+        self.exercise_label = QLabel(
+            "No recommendation generated yet."
+        )
+
+        self.exercise_label.setStyleSheet(
+            "font-size: 17px; "
+            "font-weight: bold; "
+            "color: #2563eb;"
+        )
+
+        recommendation_layout.addWidget(
+            self.exercise_label
+        )
+
+        self.difficulty_label = QLabel(
+            "Difficulty: —"
+        )
+
+        recommendation_layout.addWidget(
+            self.difficulty_label
+        )
+
+        self.reason_label = QLabel(
+            "Complete and save a clinical assessment "
+            "to generate a recommendation."
+        )
+
+        self.reason_label.setWordWrap(True)
+
+        recommendation_layout.addWidget(
+            self.reason_label
+        )
+
+        # -------------------------------------------------
+        # Approval buttons
+        # -------------------------------------------------
+
+        recommendation_buttons = QHBoxLayout()
+
+        recommendation_buttons.addStretch()
+
+        self.reject_button = QPushButton("Reject")
+        self.reject_button.clicked.connect(
+            self.reject_recommendation
+        )
+
+        self.approve_button = QPushButton("Approve Exercise")
+        self.approve_button.setObjectName(
+            "primaryButton"
+        )
+
+        self.approve_button.clicked.connect(
+            self.approve_recommendation
+        )
+
+        self.reject_button.setEnabled(False)
+        self.approve_button.setEnabled(False)
+
+        recommendation_buttons.addWidget(
+            self.reject_button
+        )
+
+        recommendation_buttons.addWidget(
+            self.approve_button
+        )
+
+        recommendation_layout.addLayout(
+            recommendation_buttons
+        )
+
+        layout.addWidget(
+            self.recommendation_card
+        )
 
         layout.addStretch()
 
@@ -228,6 +355,7 @@ class AssessmentPage(QWidget):
         patients = get_all_patients()
 
         for patient in patients:
+
             patient_id = patient[0]
             name = patient[1]
 
@@ -245,17 +373,25 @@ class AssessmentPage(QWidget):
         patient_id = self.patient_input.currentData()
 
         if patient_id is None:
+
             self.area_label.setText(
-                "Affected area: Select a patient"
+                '<span style="color:#374151;">Affected area:</span> '
+                '<span style="color:#2563eb; font-weight:600;">'
+                'Select a patient'
+                '</span>'
             )
+
             return
 
         areas = get_affected_areas(patient_id)
 
         if not areas:
+
             self.area_label.setText(
-                "Affected area: Not specified"
+                '<span style="color:#374151;">Affected area:</span> '
+                '<span style="color:#6b7280;">Not specified</span>'
             )
+
             return
 
         area = areas[0]
@@ -265,7 +401,10 @@ class AssessmentPage(QWidget):
         joint = area[3]
 
         self.area_label.setText(
-            f"Affected area: {side} • {body_region} • {joint}"
+            f'<span style="color:#374151;">Affected area:</span> '
+            f'<span style="color:#2563eb; font-weight:600;">'
+            f'{side} • {body_region} • {joint}'
+            f'</span>'
         )
 
     # =====================================================
@@ -277,52 +416,86 @@ class AssessmentPage(QWidget):
         patient_id = self.patient_input.currentData()
 
         if patient_id is None:
+
             QMessageBox.warning(
                 self,
                 "Missing Information",
                 "Please select a patient."
             )
+
             return
 
         if self.diagnosis_input.currentIndex() == 0:
+
             QMessageBox.warning(
                 self,
                 "Missing Information",
                 "Please select a diagnosis."
             )
+
             return
 
         if self.impairment_input.currentIndex() == 0:
+
             QMessageBox.warning(
                 self,
                 "Missing Information",
                 "Please select an impairment."
             )
+
             return
 
         if self.restrictions_input.currentIndex() == 0:
+
             QMessageBox.warning(
                 self,
                 "Missing Information",
                 "Please select the movement restriction."
             )
+
             return
 
         if self.rom_input.value() <= 0:
+
             QMessageBox.warning(
                 self,
                 "Missing Information",
                 "Please enter the baseline ROM."
             )
+
             return
+
+        areas = get_affected_areas(patient_id)
+
+        if not areas:
+
+            QMessageBox.warning(
+                self,
+                "Missing Information",
+                "This patient has no affected area recorded."
+            )
+
+            return
+
+        area = areas[0]
+
+        affected_side = area[1]
+        body_region = area[2]
+        joint = area[3]
 
         diagnosis = self.diagnosis_input.currentText()
         impairment = self.impairment_input.currentText()
         baseline_rom = self.rom_input.value()
         restrictions = self.restrictions_input.currentText()
-        clinical_notes = self.notes_input.toPlainText().strip()
+        clinical_notes = (
+            self.notes_input.toPlainText().strip()
+        )
 
         try:
+
+            # ---------------------------------------------
+            # Save clinical assessment
+            # ---------------------------------------------
 
             assessment_id = save_clinical_assessment(
                 patient_id,
@@ -333,25 +506,185 @@ class AssessmentPage(QWidget):
                 clinical_notes,
             )
 
-            QMessageBox.information(
-                self,
-                "Assessment Saved",
-                f"Clinical assessment saved successfully.\n\n"
-                f"Assessment ID: {assessment_id}"
+            # ---------------------------------------------
+            # Generate recommendation
+            # ---------------------------------------------
+
+            recommendation = recommend_exercise(
+                diagnosis=diagnosis,
+                affected_side=affected_side,
+                body_region=body_region,
+                joint=joint,
+                impairment=impairment,
+                baseline_rom=baseline_rom,
+                restrictions=restrictions,
             )
 
-            self.clear_form(keep_patient=True)
+            if not recommendation["success"]:
+
+                QMessageBox.information(
+                    self,
+                    "Assessment Saved",
+                    "Clinical assessment was saved, but no "
+                    "suitable exercise is currently available "
+                    "for this profile."
+                )
+
+                self.clear_recommendation()
+
+                return
+
+            # ---------------------------------------------
+            # Save recommendation as PENDING
+            # ---------------------------------------------
+
+            recommendation_id = save_recommendation(
+                patient_id=patient_id,
+                assessment_id=assessment_id,
+                exercise=recommendation["exercise"],
+                difficulty=recommendation["difficulty"],
+                reason=recommendation["reason"],
+            )
+
+            self.current_recommendation_id = (
+                recommendation_id
+            )
+
+            # ---------------------------------------------
+            # Display recommendation
+            # ---------------------------------------------
+
+            self.exercise_label.setText(
+                recommendation["exercise"]
+            )
+
+            self.difficulty_label.setText(
+                f"Difficulty: "
+                f"{recommendation['difficulty']}"
+            )
+
+            self.reason_label.setText(
+                f"Reason: {recommendation['reason']}"
+            )
+
+            self.reject_button.setEnabled(True)
+            self.approve_button.setEnabled(True)
+
+            QMessageBox.information(
+                self,
+                "Recommendation Generated",
+                "Clinical assessment saved and an exercise "
+                "recommendation has been generated.\n\n"
+                "Please review the recommendation."
+            )
 
         except Exception as error:
 
             QMessageBox.critical(
                 self,
-                "Database Error",
-                f"Could not save assessment:\n\n{error}"
+                "Error",
+                f"Could not process assessment:\n\n{error}"
             )
 
     # =====================================================
-    # Clear form
+    # Approve recommendation
+    # =====================================================
+
+    def approve_recommendation(self):
+
+        if self.current_recommendation_id is None:
+
+            return
+
+        try:
+
+            update_recommendation_status(
+                self.current_recommendation_id,
+                "APPROVED"
+            )
+
+            self.reason_label.setText(
+                "✓ Therapist approved this exercise. "
+                "It is now assigned to the patient."
+            )
+
+            self.approve_button.setEnabled(False)
+            self.reject_button.setEnabled(False)
+
+            QMessageBox.information(
+                self,
+                "Exercise Approved",
+                "The recommended exercise has been "
+                "approved and assigned to the patient."
+            )
+
+        except Exception as error:
+
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Could not approve recommendation:\n\n{error}"
+            )
+
+    # =====================================================
+    # Reject recommendation
+    # =====================================================
+
+    def reject_recommendation(self):
+
+        if self.current_recommendation_id is None:
+
+            return
+
+        try:
+
+            update_recommendation_status(
+                self.current_recommendation_id,
+                "REJECTED"
+            )
+
+            self.reason_label.setText(
+                "✕ Therapist rejected this recommendation. "
+                "A different exercise can be selected later."
+            )
+
+            self.approve_button.setEnabled(False)
+            self.reject_button.setEnabled(False)
+
+        except Exception as error:
+
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Could not reject recommendation:\n\n{error}"
+            )
+
+    # =====================================================
+    # Clear recommendation display
+    # =====================================================
+
+    def clear_recommendation(self):
+
+        self.current_recommendation_id = None
+
+        self.exercise_label.setText(
+            "No recommendation generated."
+        )
+
+        self.difficulty_label.setText(
+            "Difficulty: —"
+        )
+
+        self.reason_label.setText(
+            "No suitable exercise is currently available "
+            "for the selected clinical profile."
+        )
+
+        self.approve_button.setEnabled(False)
+        self.reject_button.setEnabled(False)
+
+    # =====================================================
+    # Reset form
     # =====================================================
 
     def clear_form(self, keep_patient=False):
@@ -364,3 +697,5 @@ class AssessmentPage(QWidget):
         self.rom_input.setValue(0)
         self.restrictions_input.setCurrentIndex(0)
         self.notes_input.clear()
+
+        self.clear_recommendation()
