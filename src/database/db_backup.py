@@ -61,24 +61,6 @@ def initialize_database():
     )
     """)
 
-    # -------------------------
-    # Clinical assessments
-    # -------------------------
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS clinical_assessments(
-        assessment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        patient_id INTEGER NOT NULL,
-        diagnosis TEXT NOT NULL,
-        impairment TEXT NOT NULL,
-        baseline_rom REAL,
-        restrictions TEXT,
-        clinical_notes TEXT,
-        assessment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(patient_id)
-            REFERENCES patients(patient_id)
-    )
-    """)
-
     conn.commit()
     conn.close()
 
@@ -211,66 +193,6 @@ def save_session(
 
     conn.commit()
     conn.close()
-
-def save_clinical_assessment(
-    patient_id,
-    diagnosis,
-    impairment,
-    baseline_rom,
-    restrictions,
-    clinical_notes
-):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO clinical_assessments(
-            patient_id,
-            diagnosis,
-            impairment,
-            baseline_rom,
-            restrictions,
-            clinical_notes
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        patient_id,
-        diagnosis,
-        impairment,
-        baseline_rom,
-        restrictions,
-        clinical_notes
-    ))
-
-    conn.commit()
-    assessment_id = cursor.lastrowid
-    conn.close()
-
-    return assessment_id
-
-def get_latest_assessment(patient_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT
-            assessment_id,
-            diagnosis,
-            impairment,
-            baseline_rom,
-            restrictions,
-            clinical_notes,
-            assessment_date
-        FROM clinical_assessments
-        WHERE patient_id = ?
-        ORDER BY assessment_date DESC
-        LIMIT 1
-    """, (patient_id,))
-
-    assessment = cursor.fetchone()
-    conn.close()
-
-    return assessment
 
 
 if __name__ == "__main__":
