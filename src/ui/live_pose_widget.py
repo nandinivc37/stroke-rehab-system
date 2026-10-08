@@ -1,11 +1,12 @@
 import cv2
+import math
 import mediapipe as mp
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from src.utils.angles import calculate_angle
+# from src.utils.angles import calculate_angle
 from src.action_recognition.rep_counter import RepCounter
 
 
@@ -152,24 +153,21 @@ class LivePoseWidget(QWidget):
                 results.pose_landmarks,
                 mp.solutions.pose.POSE_CONNECTIONS,
             )
+            #
 
             if self.affected_side == "LEFT":
                 shoulder = 11
                 elbow = 13
                 wrist = 15
-                hip = 23
-
             else:
                 shoulder = 12
                 elbow = 14
                 wrist = 16
-                hip = 24
 
             required = [
                 landmarks[shoulder],
                 landmarks[elbow],
                 landmarks[wrist],
-                landmarks[hip],
             ]
 
             visible = all(
@@ -179,28 +177,29 @@ class LivePoseWidget(QWidget):
 
             if visible:
 
-                shoulder_point = (
-                    landmarks[shoulder].x,
-                    landmarks[shoulder].y,
-                )
+                shoulder_x = landmarks[shoulder].x
+                shoulder_y = landmarks[shoulder].y
 
-                elbow_point = (
-                    landmarks[elbow].x,
-                    landmarks[elbow].y,
-                )
+                wrist_x = landmarks[wrist].x
+                wrist_y = landmarks[wrist].y
 
-                hip_point = (
-                    landmarks[hip].x,
-                    landmarks[hip].y,
-                )
+                # Vector from shoulder to wrist
+                dx = wrist_x - shoulder_x
+                dy = wrist_y - shoulder_y
 
-                # Shoulder flexion angle:
-                # hip -> shoulder -> elbow
-                angle = calculate_angle(
-                    hip_point,
-                    shoulder_point,
-                    elbow_point,
-                )
+                # Arm elevation relative to the
+                # vertical downward direction.
+                arm_length = (dx ** 2 + dy ** 2) ** 0.5
+
+                if arm_length > 0:
+                    cosine = dy / arm_length
+                    cosine = max(-1.0, min(1.0, cosine))
+
+                    angle = math.degrees(
+                        math.acos(cosine)
+                    )
+                else:
+                    angle = 0
 
                 self.current_angle = angle
 

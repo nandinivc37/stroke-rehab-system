@@ -9,10 +9,10 @@ from src.assessment.exercise_library import get_reference_sequence
 POSE_CONNECTIONS = [
     # Head / neck
     ("nose", "neck"),
-    ("neck", "left_shoulder"),
-    ("neck", "right_shoulder"),
 
     # Shoulders
+    ("neck", "left_shoulder"),
+    ("neck", "right_shoulder"),
     ("left_shoulder", "right_shoulder"),
 
     # Left arm
@@ -23,18 +23,10 @@ POSE_CONNECTIONS = [
     ("right_shoulder", "right_elbow"),
     ("right_elbow", "right_wrist"),
 
-    # Torso
+    # Upper torso
     ("left_shoulder", "left_hip"),
     ("right_shoulder", "right_hip"),
     ("left_hip", "right_hip"),
-
-    # Left leg
-    ("left_hip", "left_knee"),
-    ("left_knee", "left_ankle"),
-
-    # Right leg
-    ("right_hip", "right_knee"),
-    ("right_knee", "right_ankle"),
 ]
 
 
@@ -107,11 +99,11 @@ class ReferenceSkeletonWidget(QWidget):
         left_hip = 23
         right_hip = 24
 
-        left_knee = 25
-        right_knee = 26
+        # left_knee = 25
+        # right_knee = 26
 
-        left_ankle = 27
-        right_ankle = 28
+        # left_ankle = 27
+        # right_ankle = 28
 
         points = {
             "nose": frame[nose],
@@ -128,11 +120,11 @@ class ReferenceSkeletonWidget(QWidget):
             "left_hip": frame[left_hip],
             "right_hip": frame[right_hip],
 
-            "left_knee": frame[left_knee],
-            "right_knee": frame[right_knee],
+            # "left_knee": frame[left_knee],
+            # "right_knee": frame[right_knee],
 
-            "left_ankle": frame[left_ankle],
-            "right_ankle": frame[right_ankle],
+            # "left_ankle": frame[left_ankle],
+            # "right_ankle": frame[right_ankle],
         }
 
         # Neck is halfway between the shoulders.
@@ -253,11 +245,11 @@ class ReferenceSkeletonWidget(QWidget):
             "left_hip",
             "right_hip",
 
-            "left_knee",
-            "right_knee",
+            # "left_knee",
+            # "right_knee",
 
-            "left_ankle",
-            "right_ankle",
+            # "left_ankle",
+            # "right_ankle",
         ]
 
         for name in joint_names:
