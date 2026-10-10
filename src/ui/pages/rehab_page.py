@@ -575,5 +575,7 @@ class RehabPage(QWidget):
 
         self.session_status.setText(
             f"Session saved — "
-            f"{stats['reps']} repetitions."
+            f"{stats['reps']} repetitions | "
+            f"Movement similarity: "
+            f"{stats['trajectory_similarity']:.1f}%"
         )

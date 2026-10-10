@@ -74,16 +74,16 @@ def create_shoulder_flexion_sequence(
 
     if affected_side == "LEFT":
 
-        # Rest - arm hanging down
+       # Rest: arm down ≈ 0°
         rest[LEFT_ELBOW] = [0.37, 0.43]
         rest[LEFT_WRIST] = [0.37, 0.58]
 
-        # Middle - approximately 45 degrees
-        middle[LEFT_ELBOW] = [0.33, 0.37]
-        middle[LEFT_WRIST] = [0.28, 0.27]
+        # Middle: arm at ≈ 45°
+        middle[LEFT_ELBOW] = [0.325, 0.386]
+        middle[LEFT_WRIST] = [0.218, 0.492]
 
-        # Raised - approximately horizontal
-        raised[LEFT_ELBOW] = [0.28, 0.28]
+        # Raised: arm horizontal ≈ 90°
+        raised[LEFT_ELBOW] = [0.355, 0.28]
         raised[LEFT_WRIST] = [0.18, 0.28]
 
     # --------------------------------
@@ -93,17 +93,17 @@ def create_shoulder_flexion_sequence(
     else:
 
         # Rest
+        # Rest: arm down ≈ 0°
         rest[RIGHT_ELBOW] = [0.63, 0.43]
         rest[RIGHT_WRIST] = [0.63, 0.58]
 
-        # Middle
-        middle[RIGHT_ELBOW] = [0.67, 0.37]
-        middle[RIGHT_WRIST] = [0.72, 0.27]
+        # Middle: arm at ≈ 45°
+        middle[RIGHT_ELBOW] = [0.675, 0.386]
+        middle[RIGHT_WRIST] = [0.782, 0.492]
 
-        # Raised
-        raised[RIGHT_ELBOW] = [0.72, 0.28]
+        # Raised: arm horizontal ≈ 90°
+        raised[RIGHT_ELBOW] = [0.645, 0.28]
         raised[RIGHT_WRIST] = [0.82, 0.28]
-
     # --------------------------------
     # Complete movement
     # --------------------------------

@@ -1,6 +1,7 @@
 import cv2
 import math
 import mediapipe as mp
+import numpy as np
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QImage, QPixmap
@@ -8,6 +9,9 @@ from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 # from src.utils.angles import calculate_angle
 from src.action_recognition.rep_counter import RepCounter
+
+from src.quality_assessment.dtw import dtw_similarity
+from src.assessment.exercise_library import get_reference_sequence
 
 
 class LivePoseWidget(QWidget):
@@ -25,6 +29,8 @@ class LivePoseWidget(QWidget):
 
         self.up_frames = 0
         self.down_frames = 0
+
+        self.trajectory = []
 
 
         self.current_angle = 0
@@ -183,6 +189,25 @@ class LivePoseWidget(QWidget):
                 wrist_x = landmarks[wrist].x
                 wrist_y = landmarks[wrist].y
 
+                elbow_x = landmarks[elbow].x
+                elbow_y = landmarks[elbow].y
+
+                # -----------------------------------------
+                # Normalize arm trajectory
+                # -----------------------------------------
+
+                elbow_rel_x = elbow_x - shoulder_x
+                elbow_rel_y = elbow_y - shoulder_y
+
+                wrist_rel_x = wrist_x - shoulder_x
+                wrist_rel_y = wrist_y - shoulder_y
+
+                # Upper-arm length used for scale normalization
+                arm_length = (
+                    elbow_rel_x ** 2
+                    + elbow_rel_y ** 2
+                ) ** 0.5
+
                 # Vector from shoulder to wrist
                 dx = wrist_x - shoulder_x
                 dy = wrist_y - shoulder_y
@@ -200,6 +225,8 @@ class LivePoseWidget(QWidget):
                     )
                 else:
                     angle = 0
+
+                self.trajectory.append(float(angle))
 
                 self.current_angle = angle
 
@@ -330,10 +357,63 @@ class LivePoseWidget(QWidget):
 
     def get_stats(self):
 
+        reference_sequence = get_reference_sequence(
+            "Shoulder Flexion",
+            self.affected_side,
+        )
+
+        if self.affected_side == "LEFT":
+            shoulder = 11
+            wrist = 15
+        else:
+            shoulder = 12
+            wrist = 16
+
+        reference_trajectory = []
+
+        for frame in reference_sequence:
+
+            shoulder_x, shoulder_y = frame[shoulder]
+            wrist_x, wrist_y = frame[wrist]
+
+            dx = wrist_x - shoulder_x
+            dy = wrist_y - shoulder_y
+
+            arm_length = (
+                dx ** 2 + dy ** 2
+            ) ** 0.5
+
+            if arm_length > 0:
+
+                cosine = dy / arm_length
+                cosine = max(
+                    -1.0,
+                    min(1.0, cosine),
+                )
+
+                angle = math.degrees(
+                    math.acos(cosine)
+                )
+
+                reference_trajectory.append(
+                    angle
+                )
+
+        trajectory_similarity = 0.0
+
+        if len(self.trajectory) > 5:
+
+            trajectory_similarity = dtw_similarity(
+                reference_trajectory,
+                self.trajectory,
+            )
+
         return {
             "reps": self.rep_counter.reps,
             "max_angle": self.max_angle,
             "min_angle": self.min_angle,
+            "trajectory": self.trajectory,
+            "trajectory_similarity": trajectory_similarity,
         }
 
     def stop(self):
