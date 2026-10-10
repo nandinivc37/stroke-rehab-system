@@ -118,7 +118,10 @@ class LivePoseWidget(QWidget):
         self.rep_counter.stage = "down"
 
         self.up_frames = 0
-        self.down_frames = 0        
+        self.down_frames = 0  
+
+        self.trajectory = []  # Reset trajectory for every new session
+      
 
         self.current_angle = 0
         self.max_angle = 0
@@ -355,8 +358,8 @@ class LivePoseWidget(QWidget):
             f"Angle: {self.current_angle:.1f}°"
         )
 
+    
     def get_stats(self):
-
         reference_sequence = get_reference_sequence(
             "Shoulder Flexion",
             self.affected_side,
@@ -372,41 +375,65 @@ class LivePoseWidget(QWidget):
         reference_trajectory = []
 
         for frame in reference_sequence:
-
             shoulder_x, shoulder_y = frame[shoulder]
             wrist_x, wrist_y = frame[wrist]
 
             dx = wrist_x - shoulder_x
             dy = wrist_y - shoulder_y
 
-            arm_length = (
-                dx ** 2 + dy ** 2
-            ) ** 0.5
+            arm_length = (dx ** 2 + dy ** 2) ** 0.5
 
             if arm_length > 0:
-
                 cosine = dy / arm_length
-                cosine = max(
-                    -1.0,
-                    min(1.0, cosine),
-                )
-
-                angle = math.degrees(
-                    math.acos(cosine)
-                )
-
-                reference_trajectory.append(
-                    angle
-                )
+                cosine = max(-1.0, min(1.0, cosine))
+                angle = math.degrees(math.acos(cosine))
+                reference_trajectory.append(angle)
 
         trajectory_similarity = 0.0
+        range_completion = 0.0
+        movement_range = self.max_angle - self.min_angle
 
-        if len(self.trajectory) > 5:
+        print(
+            f"DEBUG | min={self.min_angle:.1f}, "
+            f"max={self.max_angle:.1f}, "
+            f"range={movement_range:.1f}, "
+            f"reps={self.rep_counter.reps}, "
+            f"frames={len(self.trajectory)}"
+        )
 
-            trajectory_similarity = dtw_similarity(
+        reference_peak = max(reference_trajectory, default=0.0)
+        patient_peak = max(self.trajectory, default=0.0)
+
+        # Reject sessions with virtually no arm movement.
+        if len(self.trajectory) > 5 and movement_range >= 12:
+            dtw_score = dtw_similarity(
                 reference_trajectory,
                 self.trajectory,
             )
+
+            if reference_peak > 0:
+                range_completion = min(
+                    1.0,
+                    patient_peak / reference_peak,
+                )
+
+            # Combine trajectory matching and range completion.
+            trajectory_similarity = (
+                0.5 * dtw_score
+                + 0.5 * range_completion * 100.0
+            )
+
+            trajectory_similarity = round(
+                max(0.0, min(100.0, trajectory_similarity)),
+                2,
+            )
+
+        print(
+            f"Peak angle: {patient_peak:.1f}° | "
+            f"Reference peak: {reference_peak:.1f}° | "
+            f"Range completion: {range_completion * 100:.1f}% | "
+            f"Similarity: {trajectory_similarity:.1f}%"
+        )
 
         return {
             "reps": self.rep_counter.reps,
@@ -415,6 +442,7 @@ class LivePoseWidget(QWidget):
             "trajectory": self.trajectory,
             "trajectory_similarity": trajectory_similarity,
         }
+
 
     def stop(self):
 
