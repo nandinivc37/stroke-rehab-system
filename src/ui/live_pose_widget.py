@@ -32,6 +32,9 @@ class LivePoseWidget(QWidget):
 
         self.trajectory = []
 
+        self.movement_active = False
+        self.return_frames = 0
+
 
         self.current_angle = 0
         self.max_angle = 0
@@ -121,7 +124,9 @@ class LivePoseWidget(QWidget):
         self.down_frames = 0  
 
         self.trajectory = []  # Reset trajectory for every new session
-      
+
+        self.movement_active = False
+        self.return_frames = 0
 
         self.current_angle = 0
         self.max_angle = 0
@@ -229,7 +234,27 @@ class LivePoseWidget(QWidget):
                 else:
                     angle = 0
 
-                self.trajectory.append(float(angle))
+                
+                # Record only active arm movement, not idle frames.
+                if angle >= 12:
+                    self.movement_active = True
+
+                if self.movement_active:
+                    self.trajectory.append(float(angle))
+
+                    if angle <= 10:
+                        self.return_frames += 1
+
+                        # End capture after 5 consecutive
+                        # frames in the resting position.
+                        if self.return_frames >= 5:
+                            self.movement_active = False
+                            self.return_frames = 0
+                    else:
+                        self.return_frames = 0
+
+                self.current_angle = angle
+
 
                 self.current_angle = angle
 
@@ -391,7 +416,11 @@ class LivePoseWidget(QWidget):
 
         trajectory_similarity = 0.0
         range_completion = 0.0
-        movement_range = self.max_angle - self.min_angle
+        movement_range = (
+            max(self.trajectory) - min(self.trajectory)
+            if self.trajectory
+            else 0.0
+        )
 
         print(
             f"DEBUG | min={self.min_angle:.1f}, "
