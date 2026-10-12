@@ -2,6 +2,7 @@ import cv2
 import math
 import mediapipe as mp
 import numpy as np
+import sys
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QImage, QPixmap
@@ -14,10 +15,31 @@ from src.quality_assessment.dtw import dtw_similarity
 from src.assessment.exercise_library import get_reference_sequence
 
 
+from src.compensation_detection.live_features import (
+    LiveTemporalFeatureBuffer,
+    extract_live_features,
+)
+from src.compensation_detection.lstm_inference import CompensationLSTM
+
+
+
 class LivePoseWidget(QWidget):
 
     def __init__(self, affected_side="LEFT", parent=None):
         super().__init__(parent)
+
+        self.pose = None
+
+
+        self.compensation_buffer = LiveTemporalFeatureBuffer(
+            window_size=20,
+            rolling_window=5,
+        )
+
+        self.compensation_model = None
+        self.compensation_label = None
+        self.compensation_confidence = None
+
 
         self.affected_side = affected_side.upper()
 
@@ -79,10 +101,14 @@ class LivePoseWidget(QWidget):
         if self.camera is not None:
             return
 
-        self.camera = cv2.VideoCapture(
-            0,
-            cv2.CAP_V4L2
-        )
+        
+        if sys.platform.startswith("linux"):
+            self.camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        elif sys.platform == "win32":
+            self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        else:
+            self.camera = cv2.VideoCapture(0)
+
 
         self.camera.set(
             cv2.CAP_PROP_FOURCC,
@@ -118,6 +144,17 @@ class LivePoseWidget(QWidget):
             min_detection_confidence=0.7,
             min_tracking_confidence=0.7,
         )
+
+        try:
+            self.compensation_model = CompensationLSTM()
+            self.compensation_buffer.reset()
+            self.compensation_label = None
+            self.compensation_confidence = None
+        except Exception as exc:
+            self.compensation_model = None
+            self.status_label.setText(
+                f"Compensation model unavailable: {exc}"
+            )
 
         self.rep_counter = RepCounter()
         self.rep_counter.stage = "down"
