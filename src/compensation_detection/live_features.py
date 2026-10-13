@@ -374,10 +374,17 @@ class LiveTemporalFeatureBuffer:
             dtype=np.float32,
         )
 
-        rolling_std = np.std(
-            rolling_history,
-            axis=0,
-        ).astype(np.float32)
+        if len(rolling_history) > 1:
+            rolling_std = np.std(
+                rolling_history,
+                axis=0,
+                ddof=1,
+            ).astype(np.float32)
+        else:
+            rolling_std = np.zeros(
+                len(current),
+                dtype=np.float32,
+            )
 
         # ---------------------------------------------
         # Combine

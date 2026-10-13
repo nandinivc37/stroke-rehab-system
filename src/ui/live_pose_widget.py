@@ -202,6 +202,40 @@ class LivePoseWidget(QWidget):
 
         if results.pose_landmarks:
 
+
+            # -----------------------------------------
+            # BiLSTM Compensation Detection
+            # -----------------------------------------
+            compensation_landmarks = [
+                11, 12, 13, 14, 15, 16, 23, 24
+            ]
+
+            compensation_visible = all(
+                results.pose_landmarks.landmark[i].visibility >= 0.5
+                for i in compensation_landmarks
+            )
+
+            if self.compensation_model is not None and compensation_visible:
+                base_features = extract_live_features(results)
+                self.compensation_buffer.update(base_features)
+
+                if self.compensation_buffer.ready:
+                    (
+                        self.compensation_label,
+                        self.compensation_confidence,
+                        _,
+                    ) = self.compensation_model.predict(
+                        self.compensation_buffer.get_window()
+                    )
+                else:
+                    self.compensation_label = "Analyzing..."
+                    self.compensation_confidence = None
+            else:
+                self.compensation_buffer.reset()
+                self.compensation_label = None
+                self.compensation_confidence = None
+
+
             landmarks = results.pose_landmarks.landmark
 
             mp.solutions.drawing_utils.draw_landmarks(
@@ -400,6 +434,34 @@ class LivePoseWidget(QWidget):
             )
 
         # Mirror for user-facing display
+
+
+        # -----------------------------------------
+        # Display compensation prediction
+        # -----------------------------------------
+        if self.compensation_label is not None:
+            if self.compensation_confidence is not None:
+                compensation_text = (
+                    f"Compensation: {self.compensation_label} "
+                    f"({self.compensation_confidence:.0%})"
+                )
+            else:
+                compensation_text = (
+                    f"Compensation: {self.compensation_label}"
+                )
+
+            cv2.putText(
+                display,
+                compensation_text,
+                (30, 130),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 255, 255),
+                2,
+            )
+
+
+
         display = cv2.flip(display, 1)
 
         rgb_display = cv2.cvtColor(
@@ -429,10 +491,21 @@ class LivePoseWidget(QWidget):
             )
         )
 
+        
+        compensation_status = (
+            f"Compensation: {self.compensation_label} "
+            f"({self.compensation_confidence:.0%})"
+            if self.compensation_label is not None
+            and self.compensation_confidence is not None
+            else f"Compensation: {self.compensation_label or 'Waiting for pose'}"
+        )
+
         self.status_label.setText(
             f"Reps: {self.rep_counter.reps}    "
-            f"Angle: {self.current_angle:.1f}°"
+            f"Angle: {self.current_angle:.1f}°    |    "
+            f"{compensation_status}"
         )
+
 
     
     
