@@ -1,10 +1,11 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QHeaderView,
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -17,21 +18,42 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.assessment.recommendation import (
+    DIAGNOSIS_OPTIONS,
+    SUPPORTED_DIAGNOSES,
+)
 from src.database.db import (
+    PatientRecordError,
     add_affected_area,
     add_patient,
+    delete_patient,
+    get_active_prescription,
     get_all_patients,
     get_affected_areas,
+    get_current_assessment,
+    get_patient,
+    get_patient_record_counts,
     initialize_database,
+    update_assessment_diagnosis,
 )
+from src.database.migrations import MigrationError
+
+DANGER_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #ffffff;
+        color: #b91c1c;
+        border: 1px solid #b91c1c;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-weight: 600;
+    }
+    QPushButton:hover { background-color: #fef2f2; }
+    QPushButton:disabled { color: #6b7280; border-color: #d1d5db; }
+"""
 
 
-class PatientDialog(QDialog):
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.setStyleSheet("""
+# Explicit colours keep dialogs readable under dark system themes.
+DIALOG_STYLE = """
             QDialog {
                 background-color: #ffffff;
             }
@@ -80,7 +102,15 @@ class PatientDialog(QDialog):
                 color: #172554;
                 background-color: #dbeafe;
             }
-        """)
+"""
+
+
+class PatientDialog(QDialog):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setStyleSheet(DIALOG_STYLE)
 
         self.setWindowTitle("Register New Patient")
         self.setMinimumWidth(520)
@@ -312,12 +342,120 @@ class PatientDialog(QDialog):
             )
 
 
+class EditDiagnosisDialog(QDialog):
+    """
+    Edit the diagnosis of a patient's latest clinical assessment.
+    Prescriptions and exercise settings are not changed.
+    """
+
+    def __init__(self, patient_id, parent=None):
+        super().__init__(parent)
+
+        self.setStyleSheet(DIALOG_STYLE)
+        self.setWindowTitle("Edit Diagnosis")
+        self.setMinimumWidth(460)
+
+        self.patient_id = patient_id
+        self.patient = get_patient(patient_id)
+        self.assessment = get_current_assessment(patient_id)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        areas = get_affected_areas(patient_id)
+        area = (
+            f"{areas[0][1]} {areas[0][3] or areas[0][2]}" if areas else "—"
+        )
+        form.addRow("Patient:", QLabel(
+            f"{patient_id} - {self.patient['name']}"))
+        form.addRow("Age / gender:", QLabel(
+            f"{self.patient['age']} / {self.patient['gender']}"))
+        form.addRow("Affected area:", QLabel(area))
+        form.addRow("Assessment date:", QLabel(
+            str(self.assessment["assessment_date"])))
+
+        current = self.assessment["diagnosis"]
+        self.diagnosis_input = QComboBox()
+        self.diagnosis_input.addItem("Select diagnosis")
+        self.diagnosis_input.addItems(DIAGNOSIS_OPTIONS)
+        index = self.diagnosis_input.findText(current)
+        self.diagnosis_input.setCurrentIndex(max(index, 0))
+        form.addRow("Diagnosis:", self.diagnosis_input)
+        layout.addLayout(form)
+
+        note = QLabel(
+            f"Current diagnosis: <b>{current}</b>. Only this patient's "
+            "latest assessment is updated. Existing prescriptions, "
+            "exercise settings and session history are not changed; "
+            "record a new assessment for a new recommendation."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Save Diagnosis")
+        save.setObjectName("primaryButton")
+        save.clicked.connect(self.save_diagnosis)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+
+    def save_diagnosis(self):
+
+        if self.diagnosis_input.currentIndex() == 0:
+            QMessageBox.warning(self, "Missing Information",
+                                "Please select a diagnosis.")
+            return
+
+        diagnosis = self.diagnosis_input.currentText()
+
+        if diagnosis == self.assessment["diagnosis"]:
+            QMessageBox.information(self, "No Change",
+                                    "The diagnosis is unchanged.")
+            self.reject()
+            return
+
+        try:
+            update_assessment_diagnosis(
+                self.patient_id, self.assessment["assessment_id"], diagnosis
+            )
+        except PatientRecordError as error:
+            QMessageBox.critical(self, "Not Saved", str(error))
+            return
+
+        message = f"Diagnosis updated to '{diagnosis}'."
+        prescription = get_active_prescription(self.patient_id)
+        if prescription is not None:
+            message += (
+                f"\n\nThe active prescription ({prescription['exercise']}) "
+                "and its settings were not changed."
+            )
+            if diagnosis not in SUPPORTED_DIAGNOSES:
+                message += (
+                    " Exercise recommendations are not available for this "
+                    "diagnosis; review the prescription on the Assessment "
+                    "page."
+                )
+        QMessageBox.information(self, "Diagnosis Updated", message)
+        self.accept()
+
+
 class PatientsPage(QWidget):
+
+    # Emitted after a patient was saved, so other pages reload their lists.
+    patients_changed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
 
         initialize_database()
+
+        # Set by the main window: True while a session for that patient
+        # is running (it must not be deleted mid-session).
+        self.patient_in_session = lambda patient_id: False
 
         self.build_ui()
         self.load_patients()
@@ -368,13 +506,34 @@ class PatientsPage(QWidget):
 
         layout.addLayout(header)
 
+        # Actions on the patient selected in the table.
+        actions = QHBoxLayout()
+        actions.addStretch()
+
+        self.edit_diagnosis_button = QPushButton("Edit Diagnosis")
+        self.edit_diagnosis_button.clicked.connect(
+            self.edit_selected_diagnosis
+        )
+        self.delete_patient_button = QPushButton("Delete Patient")
+        self.delete_patient_button.setStyleSheet(DANGER_BUTTON_STYLE)
+        self.delete_patient_button.clicked.connect(
+            self.delete_selected_patient
+        )
+        for button in (self.edit_diagnosis_button,
+                       self.delete_patient_button):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setEnabled(False)
+            actions.addWidget(button)
+
+        layout.addLayout(actions)
+
         # -----------------------------------------
         # Patient table
         # -----------------------------------------
 
         self.patient_table = QTableWidget()
 
-        self.patient_table.setColumnCount(7)
+        self.patient_table.setColumnCount(8)
 
         self.patient_table.setHorizontalHeaderLabels([
             "Patient ID",
@@ -384,6 +543,7 @@ class PatientsPage(QWidget):
             "Affected Side",
             "Body Region",
             "Joint",
+            "Diagnosis",
         ])
 
         self.patient_table.setEditTriggers(
@@ -439,6 +599,15 @@ class PatientsPage(QWidget):
             QHeaderView.ResizeMode.Stretch
         )
 
+        header.setSectionResizeMode(
+            7,
+            QHeaderView.ResizeMode.Stretch
+        )
+
+        self.patient_table.itemSelectionChanged.connect(
+            self._selection_changed
+        )
+
         layout.addWidget(self.patient_table)
 
     # ---------------------------------------------
@@ -447,8 +616,10 @@ class PatientsPage(QWidget):
 
     def load_patients(self):
 
+        selected = self.selected_patient_id()
         patients = get_all_patients()
 
+        self.patient_table.clearSelection()
         self.patient_table.setRowCount(
             len(patients)
         )
@@ -473,6 +644,8 @@ class PatientsPage(QWidget):
                 body_region = "--"
                 joint = "--"
 
+            assessment = get_current_assessment(patient_id)
+
             values = [
                 patient_id,
                 name,
@@ -481,6 +654,7 @@ class PatientsPage(QWidget):
                 side,
                 body_region,
                 joint,
+                assessment["diagnosis"] if assessment else "—",
             ]
 
             for column, value in enumerate(values):
@@ -492,6 +666,7 @@ class PatientsPage(QWidget):
                 item.setTextAlignment(
                     Qt.AlignmentFlag.AlignCenter
                 )
+                item.setData(Qt.ItemDataRole.UserRole, patient_id)
 
                 self.patient_table.setItem(
                     row,
@@ -500,6 +675,140 @@ class PatientsPage(QWidget):
                 )
 
         #self.patient_table.resizeColumnsToContents()
+
+        # Keep the previous selection if that patient still exists.
+        for row in range(self.patient_table.rowCount()):
+            if self._row_patient_id(row) == selected:
+                self.patient_table.selectRow(row)
+                break
+        self._selection_changed()
+
+    def _row_patient_id(self, row):
+        item = self.patient_table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def selected_patient_id(self):
+        rows = self.patient_table.selectionModel().selectedRows()
+        return self._row_patient_id(rows[0].row()) if rows else None
+
+    def _selection_changed(self):
+        selected = self.selected_patient_id() is not None
+        self.edit_diagnosis_button.setEnabled(selected)
+        self.delete_patient_button.setEnabled(selected)
+
+    def _records_changed(self):
+        self.load_patients()
+        self.patients_changed.emit()
+
+    # ---------------------------------------------
+    # Edit diagnosis
+    # ---------------------------------------------
+
+    def edit_selected_diagnosis(self):
+
+        patient_id = self.selected_patient_id()
+        if patient_id is None:
+            return
+
+        if get_current_assessment(patient_id) is None:
+            QMessageBox.information(
+                self,
+                "No Assessment",
+                "This patient has no clinical assessment yet. Record one "
+                "on the Assessment page to set a diagnosis.",
+            )
+            return
+
+        dialog = EditDiagnosisDialog(patient_id, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._records_changed()
+
+    # ---------------------------------------------
+    # Delete patient
+    # ---------------------------------------------
+
+    def delete_selected_patient(self):
+
+        patient_id = self.selected_patient_id()
+        if patient_id is None:
+            return
+
+        patient = get_patient(patient_id)
+        if patient is None:
+            self._records_changed()
+            return
+
+        if self.patient_in_session(patient_id):
+            QMessageBox.warning(
+                self,
+                "Session Running",
+                "End the running rehabilitation session for this patient "
+                "before deleting them.",
+            )
+            return
+
+        counts = get_patient_record_counts(patient_id)
+        label = f"{patient_id} - {patient['name']}"
+        lines = [
+            ("rehabilitation session(s) — the patient's progress history",
+             counts["sessions"]),
+            ("clinical assessment(s)", counts["clinical_assessments"]),
+            ("exercise prescription(s) and recommendation(s)",
+             counts["exercise_recommendations"]),
+            ("adaptation decision(s)", counts["adaptation_decisions"]),
+            ("affected-area record(s)", counts["affected_areas"]),
+        ]
+        details = "\n".join(f"  • {n} {text}" for text, n in lines)
+
+        answer = QMessageBox.question(
+            self,
+            "Delete Patient",
+            f"Permanently delete patient {label}?\n\n"
+            f"This also deletes all of their records:\n{details}\n\n"
+            "This cannot be undone in the application. A verified backup "
+            "of the whole database is saved in data/backups/ first; the "
+            "patient's data remains in that backup until it is deleted "
+            "separately.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        if counts["sessions"] or counts["clinical_assessments"]:
+            typed, ok = QInputDialog.getText(
+                self,
+                "Confirm Deletion of Clinical History",
+                f"{counts['sessions']} session(s) and "
+                f"{counts['clinical_assessments']} assessment(s) will be "
+                f"deleted.\nType the patient's name ({patient['name']}) "
+                "to confirm:",
+            )
+            if not ok or typed.strip() != patient["name"].strip():
+                QMessageBox.information(
+                    self, "Not Deleted",
+                    "The name did not match. Nothing was deleted.",
+                )
+                return
+
+        try:
+            result = delete_patient(patient_id)
+        except (PatientRecordError, MigrationError, OSError) as error:
+            QMessageBox.critical(
+                self, "Not Deleted",
+                f"Patient {label} was not deleted:\n\n{error}",
+            )
+            return
+
+        self.patient_table.clearSelection()
+        self._records_changed()
+
+        QMessageBox.information(
+            self,
+            "Patient Deleted",
+            f"Patient {label} and their records were deleted.\n\n"
+            f"Backup: {result['backup']}",
+        )
 
     # ---------------------------------------------
     # New patient
@@ -510,4 +819,4 @@ class PatientsPage(QWidget):
         dialog = PatientDialog(self)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.load_patients()
+            self._records_changed()

@@ -37,16 +37,25 @@ class ReferenceSkeletonWidget(QWidget):
         exercise_name="Shoulder Flexion",
         affected_side="LEFT",
         parent=None,
+        frames=None,
+        caption=None,
     ):
         super().__init__(parent)
 
         self.exercise_name = exercise_name
         self.affected_side = affected_side.upper()
+        self.caption = caption
 
-        self.sequence = get_reference_sequence(
-            exercise_name,
-            self.affected_side,
-        )
+        # Precomputed (n, 33, 2) frames from the exercise catalogue, so
+        # the animation shown is the one used for DTW scoring. Without
+        # frames, fall back to the original 2D reference.
+        if frames is not None:
+            self.sequence = frames
+        else:
+            self.sequence = get_reference_sequence(
+                exercise_name,
+                self.affected_side,
+            )
 
         self.frame_index = 0
 
@@ -266,6 +275,16 @@ class ReferenceSkeletonWidget(QWidget):
                 int(py - radius),
                 radius * 2,
                 radius * 2,
+            )
+
+        if self.caption:
+            painter.setPen(QPen(Qt.GlobalColor.darkGray))
+            painter.drawText(
+                self.rect().adjusted(8, 0, -8, -8),
+                Qt.AlignmentFlag.AlignBottom
+                | Qt.AlignmentFlag.AlignHCenter
+                | Qt.TextFlag.TextWordWrap,
+                self.caption,
             )
 
         painter.end()

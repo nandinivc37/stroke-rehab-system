@@ -18,6 +18,9 @@ from src.ui.pages.rehab_page import RehabPage
 from src.ui.pages.progress_page import ProgressPage
 
 
+REHAB_PAGE_INDEX = 3
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -120,20 +123,36 @@ class MainWindow(QMainWindow):
 
         self.pages = QStackedWidget()
 
-        self.pages.addWidget(
-            DashboardPage()
+        self.dashboard_page = DashboardPage()
+        self.dashboard_page.start_session_requested.connect(
+            lambda: self.show_page(REHAB_PAGE_INDEX)
         )
 
         self.pages.addWidget(
-            PatientsPage()
+            self.dashboard_page
+        )
+
+        self.patients_page = PatientsPage()
+        self.patients_page.patients_changed.connect(
+            self.refresh_patient_lists
+        )
+
+        self.pages.addWidget(
+            self.patients_page
         )
 
         self.pages.addWidget(
             AssessmentPage()
         )
 
+        self.rehab_page = RehabPage()
+        self.patients_page.patient_in_session = (
+            lambda patient_id: self.rehab_page.live_widget is not None
+            and self.rehab_page.current_patient_id == patient_id
+        )
+
         self.pages.addWidget(
-            RehabPage()
+            self.rehab_page
         )
 
         self.pages.addWidget(
@@ -161,9 +180,23 @@ class MainWindow(QMainWindow):
     # Page navigation
     # ---------------------------------------------
 
+    def refresh_patient_lists(self):
+        """Reload pages after a registration, without an app restart.
+        Each page's refresh() keeps its current selection (and the
+        session page does not reload mid-session)."""
+        for i in range(self.pages.count()):
+            page = self.pages.widget(i)
+            if page is not self.patients_page and hasattr(page, "refresh"):
+                page.refresh()
+
     def show_page(self, index):
 
         self.pages.setCurrentIndex(index)
+
+        # Pages that show database content reload it when displayed.
+        page = self.pages.widget(index)
+        if hasattr(page, "refresh"):
+            page.refresh()
 
         # Highlight active navigation button
         for i, button in enumerate(

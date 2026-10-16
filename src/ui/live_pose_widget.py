@@ -1,68 +1,89 @@
-import cv2
-import math
-import mediapipe as mp
-import numpy as np
+import logging
 import sys
+import time
+from collections import deque
+
+import cv2
+import mediapipe as mp
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-# from src.utils.angles import calculate_angle
-from src.action_recognition.rep_counter import RepCounter
-
-from src.quality_assessment.dtw import dtw_similarity
-from src.assessment.exercise_library import get_reference_sequence
-
-
-from src.compensation_detection.live_features import (
-    LiveTemporalFeatureBuffer,
-    extract_live_features,
+from src.adaptation.policy import PolicyConfig
+from src.compensation_detection.geometric_measures import (
+    ExperimentalPostureMonitor,
 )
-from src.compensation_detection.lstm_inference import CompensationLSTM
+from src.exercises.analyzer import (
+    ExerciseAnalyzer,
+    STATUS_NO_POSE,
+    STATUS_NOT_VISIBLE,
+    STATUS_OK,
+    STATUS_UNMEASURABLE,
+)
+from src.exercises.legacy import LEGACY_SHOULDER_RAISE_2D
 
+logger = logging.getLogger(__name__)
+
+# The Kinect-trained BiLSTM compensation model is intentionally NOT used
+# here: its features are incompatible with MediaPipe landmarks (see
+# README, "Compensation detection status").
+
+# Stop analysing after this many consecutive frames fail, rather than
+# silently continuing with a broken pipeline.
+MAX_CONSECUTIVE_ERRORS = 30
+MAX_CONSECUTIVE_READ_FAILURES = 60
+
+# Frames used for the "now" frame rate shown live (about 2-3 s at the
+# rates seen on a CPU). The session average is the analyzer's mean_fps,
+# the same value the adaptive policy's frame-rate gate checks.
+RECENT_FPS_FRAMES = 20
+
+FPS_STYLE = """
+    background-color: #111827;
+    color: {colour};
+    font-size: 16px;
+    font-weight: 700;
+    padding: 6px 10px;
+    border-radius: 6px;
+"""
+FPS_OK_COLOUR = "#ffffff"
+FPS_LOW_COLOUR = "#fde047"
 
 
 class LivePoseWidget(QWidget):
 
-    def __init__(self, affected_side="LEFT", parent=None):
+    def __init__(
+        self,
+        exercise=None,
+        affected_side="LEFT",
+        parameters=None,
+        parent=None,
+    ):
         super().__init__(parent)
 
-        self.pose = None
+        self.exercise = exercise or LEGACY_SHOULDER_RAISE_2D
+        self.affected_side = affected_side.upper()
 
-
-        self.compensation_buffer = LiveTemporalFeatureBuffer(
-            window_size=20,
-            rolling_window=5,
+        self.analyzer = ExerciseAnalyzer(
+            self.exercise,
+            self.affected_side,
+            parameters,
         )
 
-        self.compensation_model = None
-        self.compensation_label = None
-        self.compensation_confidence = None
-
-
-        self.affected_side = affected_side.upper()
+        # Experimental, unvalidated posture measurements: recorded for
+        # therapist review only, never shown on the patient overlay.
+        self.posture_monitor = ExperimentalPostureMonitor(
+            self.affected_side
+        )
 
         self.camera = None
         self.pose = None
 
-        self.rep_counter = RepCounter()
-        self.rep_counter.stage = "down"
-
-        self.up_frames = 0
-        self.down_frames = 0
-
-        self.trajectory = []
-        self.movement_segments = []
-        self.current_segment = []
-
-        self.movement_active = False
-        self.return_frames = 0
-
-
-        self.current_angle = 0
-        self.max_angle = 0
-        self.min_angle = 180
+        self.consecutive_errors = 0
+        self.consecutive_read_failures = 0
+        self.last_error = None
+        self.analysis_halted = False
 
         self.video_label = QLabel()
         self.video_label.setAlignment(
@@ -80,6 +101,7 @@ class LivePoseWidget(QWidget):
         self.status_label.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
+        self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet("""
             color: #374151;
             font-size: 14px;
@@ -90,25 +112,38 @@ class LivePoseWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        # Measured processing frame rate, shown while the exercise runs.
+        self.min_fps = PolicyConfig().min_fps
+        self.frame_times = deque(maxlen=RECENT_FPS_FRAMES)
+        self.fps_label = QLabel("Frame rate: —")
+        self.fps_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fps_label.setWordWrap(True)
+        self.fps_label.setStyleSheet(
+            FPS_STYLE.format(colour=FPS_OK_COLOUR)
+        )
+
         layout.addWidget(self.video_label)
+        layout.addWidget(self.fps_label)
         layout.addWidget(self.status_label)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
+
+    # -----------------------------------------------------
+    # Camera lifecycle
+    # -----------------------------------------------------
 
     def start(self):
 
         if self.camera is not None:
             return
 
-        
         if sys.platform.startswith("linux"):
             self.camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
         elif sys.platform == "win32":
             self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         else:
             self.camera = cv2.VideoCapture(0)
-
 
         self.camera.set(
             cv2.CAP_PROP_FOURCC,
@@ -145,34 +180,13 @@ class LivePoseWidget(QWidget):
             min_tracking_confidence=0.7,
         )
 
-        try:
-            self.compensation_model = CompensationLSTM()
-            self.compensation_buffer.reset()
-            self.compensation_label = None
-            self.compensation_confidence = None
-        except Exception as exc:
-            self.compensation_model = None
-            self.status_label.setText(
-                f"Compensation model unavailable: {exc}"
-            )
-
-        self.rep_counter = RepCounter()
-        self.rep_counter.stage = "down"
-
-        self.up_frames = 0
-        self.down_frames = 0  
-
-        self.trajectory = []  # Reset trajectory for every new session
-
-        self.movement_segments = []
-        self.current_segment = []
-
-        self.movement_active = False
-        self.return_frames = 0
-
-        self.current_angle = 0
-        self.max_angle = 0
-        self.min_angle = 180
+        self.analyzer.reset()
+        self.posture_monitor.reset()
+        self.frame_times.clear()
+        self.consecutive_errors = 0
+        self.consecutive_read_failures = 0
+        self.last_error = None
+        self.analysis_halted = False
 
         self.status_label.setText(
             f"Monitoring {self.affected_side.lower()} arm"
@@ -180,17 +194,98 @@ class LivePoseWidget(QWidget):
 
         self.timer.start(30)
 
+    # -----------------------------------------------------
+    # Per-frame processing
+    # -----------------------------------------------------
+
     def update_frame(self):
 
-        if self.camera is None:
+        if self.camera is None or self.analysis_halted:
             return
 
         success, frame = self.camera.read()
 
         if not success:
+            self.consecutive_read_failures += 1
+
+            if (
+                self.consecutive_read_failures
+                == MAX_CONSECUTIVE_READ_FAILURES
+            ):
+                self.status_label.setText(
+                    "Camera is not delivering frames. "
+                    "Check the connection and restart the session."
+                )
             return
 
-        # Process original frame first
+        self.consecutive_read_failures = 0
+        self.frame_times.append(time.monotonic())
+
+        # A Qt slot must never raise: PyQt6 aborts the whole application
+        # on an unhandled exception. Errors are logged, counted in the
+        # session summary, and shown; no substitute values are produced.
+        try:
+            self._process_frame(frame)
+            self.consecutive_errors = 0
+
+        except Exception as error:
+            logger.exception("Frame processing failed")
+
+            self.analyzer.record_error()
+            self.consecutive_errors += 1
+            self.last_error = f"{type(error).__name__}: {error}"
+
+            if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                self.analysis_halted = True
+                self.timer.stop()
+                self.status_label.setText(
+                    "Analysis stopped after repeated processing errors "
+                    f"({self.last_error}). End the session; "
+                    "data recorded so far is kept."
+                )
+            else:
+                self.status_label.setText(
+                    f"Frame processing error: {self.last_error}"
+                )
+
+        self._update_fps_label()
+
+    def recent_fps(self):
+        """Processed frames per second over the last few frames."""
+        if len(self.frame_times) < 2:
+            return None
+        span = self.frame_times[-1] - self.frame_times[0]
+        if span <= 0:
+            return None
+        return (len(self.frame_times) - 1) / span
+
+    def _update_fps_label(self):
+        recent = self.recent_fps()
+        average = self.analyzer.mean_fps
+
+        if recent is None or average is None:
+            self.fps_label.setText("Frame rate: measuring…")
+            colour = FPS_OK_COLOUR
+        else:
+            text = (
+                f"Frame rate: {recent:.1f} fps now · "
+                f"{average:.1f} fps session average"
+            )
+            if average < self.min_fps:
+                text += (
+                    f" — below {self.min_fps:g} fps: this attempt "
+                    "cannot be assessed"
+                )
+                colour = FPS_LOW_COLOUR
+            else:
+                colour = FPS_OK_COLOUR
+            self.fps_label.setText(text)
+
+        self.fps_label.setStyleSheet(FPS_STYLE.format(colour=colour))
+
+    def _process_frame(self, frame):
+
+        # MediaPipe receives the original (unmirrored) frame.
         rgb = cv2.cvtColor(
             frame,
             cv2.COLOR_BGR2RGB
@@ -198,271 +293,75 @@ class LivePoseWidget(QWidget):
 
         results = self.pose.process(rgb)
 
+        analysis = self.analyzer.update(
+            results,
+            time.monotonic(),
+        )
+
+        self.posture_monitor.update(
+            results,
+            analysis.movement_active,
+        )
+
         display = frame.copy()
 
         if results.pose_landmarks:
-
-
-            # -----------------------------------------
-            # BiLSTM Compensation Detection
-            # -----------------------------------------
-            compensation_landmarks = [
-                11, 12, 13, 14, 15, 16, 23, 24
-            ]
-
-            compensation_visible = all(
-                results.pose_landmarks.landmark[i].visibility >= 0.5
-                for i in compensation_landmarks
-            )
-
-            if self.compensation_model is not None and compensation_visible:
-                base_features = extract_live_features(results)
-                self.compensation_buffer.update(base_features)
-
-                if self.compensation_buffer.ready:
-                    (
-                        self.compensation_label,
-                        self.compensation_confidence,
-                        _,
-                    ) = self.compensation_model.predict(
-                        self.compensation_buffer.get_window()
-                    )
-                else:
-                    self.compensation_label = "Analyzing..."
-                    self.compensation_confidence = None
-            else:
-                self.compensation_buffer.reset()
-                self.compensation_label = None
-                self.compensation_confidence = None
-
-
-            landmarks = results.pose_landmarks.landmark
-
             mp.solutions.drawing_utils.draw_landmarks(
                 display,
                 results.pose_landmarks,
                 mp.solutions.pose.POSE_CONNECTIONS,
             )
-            #
 
-            if self.affected_side == "LEFT":
-                shoulder = 11
-                elbow = 13
-                wrist = 15
-            else:
-                shoulder = 12
-                elbow = 14
-                wrist = 16
-
-            required = [
-                landmarks[shoulder],
-                landmarks[elbow],
-                landmarks[wrist],
-            ]
-
-            visible = all(
-                point.visibility > 0.5
-                for point in required
-            )
-
-            if visible:
-
-                shoulder_x = landmarks[shoulder].x
-                shoulder_y = landmarks[shoulder].y
-
-                wrist_x = landmarks[wrist].x
-                wrist_y = landmarks[wrist].y
-
-                elbow_x = landmarks[elbow].x
-                elbow_y = landmarks[elbow].y
-
-                # -----------------------------------------
-                # Normalize arm trajectory
-                # -----------------------------------------
-
-                elbow_rel_x = elbow_x - shoulder_x
-                elbow_rel_y = elbow_y - shoulder_y
-
-                wrist_rel_x = wrist_x - shoulder_x
-                wrist_rel_y = wrist_y - shoulder_y
-
-                # Upper-arm length used for scale normalization
-                arm_length = (
-                    elbow_rel_x ** 2
-                    + elbow_rel_y ** 2
-                ) ** 0.5
-
-                # Vector from shoulder to wrist
-                dx = wrist_x - shoulder_x
-                dy = wrist_y - shoulder_y
-
-                # Arm elevation relative to the
-                # vertical downward direction.
-                arm_length = (dx ** 2 + dy ** 2) ** 0.5
-
-                if arm_length > 0:
-                    cosine = dy / arm_length
-                    cosine = max(-1.0, min(1.0, cosine))
-
-                    angle = math.degrees(
-                        math.acos(cosine)
-                    )
-                else:
-                    angle = 0
-
-                
-                # Record only active arm movement, not idle frames.
-                
-                # Capture each raise-and-lower attempt separately.
-                if angle >= 12:
-                    self.movement_active = True
-
-                if self.movement_active:
-                    self.current_segment.append(float(angle))
-                    self.trajectory.append(float(angle))
-
-                    if angle <= 10:
-                        self.return_frames += 1
-
-                        if self.return_frames >= 5:
-                            # Save this completed movement attempt.
-                            if len(self.current_segment) > 5:
-                                self.movement_segments.append(
-                                    self.current_segment.copy()
-                                )
-
-                            self.current_segment = []
-                            self.movement_active = False
-                            self.return_frames = 0
-                    else:
-                        self.return_frames = 0
-
-
-                self.current_angle = angle
-
-
-                self.current_angle = angle
-
-                self.max_angle = max(
-                    self.max_angle,
-                    angle,
-                )
-
-                self.min_angle = min(
-                    self.min_angle,
-                    angle,
-                )
-
-                # Shoulder flexion rep counting
-                # Shoulder flexion rep counting
-                #
-                # Down position  ≈ 30–45°
-                # Up position    ≈ 80–90°
-                #
-                # One complete cycle:
-                # DOWN → UP → DOWN = 1 rep
-
-                # Shoulder flexion rep counting
-                #
-                # Require several consecutive frames in a position
-                # so a single MediaPipe landmark glitch does not
-                # create a false repetition.
-
-                if angle >= 80:
-                    self.up_frames += 1
-                    self.down_frames = 0
-
-                    if (
-                        self.up_frames >= 5
-                        and self.rep_counter.stage == "down"
-                    ):
-                        self.rep_counter.stage = "up"
-
-                elif angle <= 45:
-                    self.down_frames += 1
-                    self.up_frames = 0
-
-                    if (
-                        self.down_frames >= 5
-                        and self.rep_counter.stage == "up"
-                    ):
-                        self.rep_counter.stage = "down"
-                        self.rep_counter.reps += 1
-
-                cv2.putText(
-                    display,
-                    f"Angle: {angle:.1f}",
-                    (30, 45),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (255, 255, 255),
-                    2,
-                )
-
-                cv2.putText(
-                    display,
-                    f"Reps: {self.rep_counter.reps}",
-                    (30, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (255, 255, 255),
-                    2,
-                )
-
-            else:
-
-                cv2.putText(
-                    display,
-                    "Keep affected arm visible",
-                    (30, 45),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 200, 255),
-                    2,
-                )
-
-        else:
-
-            cv2.putText(
-                display,
-                "Pose not detected",
-                (30, 45),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 200, 255),
-                2,
-            )
-
-        # Mirror for user-facing display
-
-
-        # -----------------------------------------
-        # Display compensation prediction
-        # -----------------------------------------
-        if self.compensation_label is not None:
-            if self.compensation_confidence is not None:
-                compensation_text = (
-                    f"Compensation: {self.compensation_label} "
-                    f"({self.compensation_confidence:.0%})"
-                )
-            else:
-                compensation_text = (
-                    f"Compensation: {self.compensation_label}"
-                )
-
-            cv2.putText(
-                display,
-                compensation_text,
-                (30, 130),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (0, 255, 255),
-                2,
-            )
-
-
-
+        # Mirror for user-facing display BEFORE drawing any text,
+        # otherwise the text itself appears mirrored.
         display = cv2.flip(display, 1)
+
+        self._draw_overlay(display, analysis)
+        self._show(display)
+
+        self.status_label.setText(self._status_text())
+
+    def _reps_text(self):
+        target = self.analyzer.parameters.get("target_reps")
+        if target:
+            return f"Reps: {self.analyzer.reps} / {int(target)}"
+        return f"Reps: {self.analyzer.reps}"
+
+    def _draw_overlay(self, display, analysis):
+
+        if analysis.status == STATUS_OK:
+            lines = [
+                (
+                    f"{self.exercise.angle_label}: "
+                    f"{analysis.angle:.1f}",
+                    (255, 255, 255),
+                    0.9,
+                ),
+                (self._reps_text(), (255, 255, 255), 0.9),
+            ]
+        elif analysis.status == STATUS_NOT_VISIBLE:
+            lines = [("Keep affected arm visible", (0, 200, 255), 0.8)]
+        elif analysis.status == STATUS_UNMEASURABLE:
+            lines = [("Cannot measure this frame", (0, 200, 255), 0.8)]
+        elif analysis.status == STATUS_NO_POSE:
+            lines = [("Pose not detected", (0, 200, 255), 0.8)]
+        else:
+            lines = []
+
+        y = 45
+        for text, colour, scale in lines:
+            cv2.putText(
+                display,
+                text,
+                (30, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                scale,
+                colour,
+                2,
+            )
+            y += 40
+
+    def _show(self, display):
 
         rgb_display = cv2.cvtColor(
             display,
@@ -491,107 +390,33 @@ class LivePoseWidget(QWidget):
             )
         )
 
-        
-        compensation_status = (
-            f"Compensation: {self.compensation_label} "
-            f"({self.compensation_confidence:.0%})"
-            if self.compensation_label is not None
-            and self.compensation_confidence is not None
-            else f"Compensation: {self.compensation_label or 'Waiting for pose'}"
-        )
-
-        self.status_label.setText(
-            f"Reps: {self.rep_counter.reps}    "
-            f"Angle: {self.current_angle:.1f}°    |    "
-            f"{compensation_status}"
-        )
-
-
-    
-    
-    def get_stats(self):
-        reference_sequence = get_reference_sequence(
-            "Shoulder Flexion",
-            self.affected_side,
-        )
-
-        if self.affected_side == "LEFT":
-            shoulder, wrist = 11, 15
+    def _status_text(self):
+        # Never show the last measured angle for a frame that was not
+        # measured: it makes an untracked arm look tracked.
+        if self.analyzer.last_status == STATUS_OK:
+            angle = f"{self.analyzer.current_angle:.1f}°"
         else:
-            shoulder, wrist = 12, 16
-
-        reference_trajectory = []
-
-        for frame in reference_sequence:
-            shoulder_x, shoulder_y = frame[shoulder]
-            wrist_x, wrist_y = frame[wrist]
-
-            dx = wrist_x - shoulder_x
-            dy = wrist_y - shoulder_y
-            arm_length = (dx ** 2 + dy ** 2) ** 0.5
-
-            if arm_length > 0:
-                cosine = max(-1.0, min(1.0, dy / arm_length))
-                reference_trajectory.append(
-                    math.degrees(math.acos(cosine))
-                )
-
-        reference_peak = max(reference_trajectory, default=0.0)
-
-        # Include an unfinished attempt when the session ends mid-movement.
-        segments = [segment.copy() for segment in self.movement_segments]
-
-        if self.movement_active and len(self.current_segment) > 5:
-            segments.append(self.current_segment.copy())
-
-        segment_scores = []
-
-        for segment in segments:
-            if len(segment) <= 5:
-                continue
-
-            movement_range = max(segment) - min(segment)
-            patient_peak = max(segment)
-
-            # Ignore segments that contain virtually no movement.
-            if movement_range < 12:
-                continue
-
-            dtw_score = dtw_similarity(
-                reference_trajectory,
-                segment,
-            )
-
-            range_completion = (
-                min(1.0, patient_peak / reference_peak)
-                if reference_peak > 0
-                else 0.0
-            )
-
-            score = (
-                0.5 * dtw_score
-                + 0.5 * range_completion * 100.0
-            )
-
-            segment_scores.append(
-                max(0.0, min(100.0, score))
-            )
-
-        trajectory_similarity = (
-            round(sum(segment_scores) / len(segment_scores), 2)
-            if segment_scores
-            else 0.0
+            angle = "not tracked"
+        fraction = self.analyzer.measured_fraction
+        tracked = (
+            f"    Arm tracked: {100 * fraction:.0f}% of frames"
+            if fraction is not None else ""
+        )
+        return (
+            f"{self._reps_text()}    "
+            f"{self.exercise.angle_label}: {angle}{tracked}"
         )
 
-        return {
-            "reps": self.rep_counter.reps,
-            "max_angle": self.max_angle,
-            "min_angle": self.min_angle,
-            "trajectory": self.trajectory,
-            "trajectory_similarity": trajectory_similarity,
-        }
+    # -----------------------------------------------------
+    # Results
+    # -----------------------------------------------------
 
-
+    def get_stats(self):
+        stats = self.analyzer.summary()
+        stats["experimental_posture"] = self.posture_monitor.summary()
+        stats["analysis_halted"] = self.analysis_halted
+        stats["last_error"] = self.last_error
+        return stats
 
     def stop(self):
 

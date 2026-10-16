@@ -1,9 +1,16 @@
 import sys
+from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
+# Allow `python src/ui/app.py` from any directory, in addition to
+# `python -m src.ui.app` from the project root.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.ui.main_window import MainWindow
-from src.ui.styles import APP_STYLE
+from PyQt6.QtWidgets import QApplication  # noqa: E402
+
+from src.ui.main_window import MainWindow  # noqa: E402
+from src.ui.styles import apply_theme  # noqa: E402
 
 
 def main():
@@ -14,7 +21,7 @@ def main():
         "Stroke Rehab System"
     )
 
-    app.setStyleSheet(APP_STYLE)
+    apply_theme(app)
 
     window = MainWindow()
     window.show()

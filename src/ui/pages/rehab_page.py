@@ -10,12 +10,18 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import logging
+
+from src.adaptation.workflow import propose_after_session
 from src.database.db import (
+    get_active_prescription,
     get_all_patients,
-    get_latest_approved_exercise,
     get_affected_areas,
-    save_session,
+    save_session_summary,
 )
+from src.exercises.catalogue import get_exercise_config
+
+logger = logging.getLogger(__name__)
 
 from src.ui.reference_skeleton import (
     ReferenceSkeletonWidget,
@@ -33,7 +39,12 @@ class RehabPage(QWidget):
 
         self.current_patient_id = None
         self.current_exercise = None
+        self.current_config = None
+        self.current_parameters = None
+        self.current_prescription_id = None
         self.current_side = "LEFT"
+        self.last_session_id = None
+        self.last_adaptation = None
 
         self.reference_widget = None
         self.live_widget = None
@@ -83,6 +94,7 @@ class RehabPage(QWidget):
                 border: 1px solid #e5e7eb;
                 border-radius: 10px;
             }
+            QLabel { border: none; }
         """)
 
         control_layout = QHBoxLayout(
@@ -175,6 +187,17 @@ class RehabPage(QWidget):
 
         layout.addWidget(control_card)
 
+        # Prescribed parameters and instructions for the exercise.
+        self.prescription_label = QLabel("")
+        self.prescription_label.setWordWrap(True)
+        self.prescription_label.setStyleSheet("""
+            color: #374151;
+            font-size: 13px;
+            padding: 2px 4px;
+        """)
+
+        layout.addWidget(self.prescription_label)
+
         # -------------------------------------------------
         # Main exercise area
         # -------------------------------------------------
@@ -192,6 +215,7 @@ class RehabPage(QWidget):
                 border: 1px solid #e5e7eb;
                 border-radius: 12px;
             }
+            QLabel { border: none; }
         """)
 
         reference_layout = QVBoxLayout(
@@ -243,6 +267,7 @@ class RehabPage(QWidget):
                 border: 1px solid #e5e7eb;
                 border-radius: 12px;
             }
+            QLabel { border: none; }
         """)
 
         camera_layout = QVBoxLayout(
@@ -313,6 +338,8 @@ class RehabPage(QWidget):
             Qt.AlignmentFlag.AlignCenter
         )
 
+        self.session_status.setWordWrap(True)
+
         self.session_status.setStyleSheet("""
             color: #374151;
             font-size: 14px;
@@ -349,10 +376,38 @@ class RehabPage(QWidget):
 
         if self.patient_combo.count() > 0:
             self.patient_changed(0)
+        else:
+            # No patients (e.g. the last one was deleted).
+            self.current_patient_id = None
+            self._clear_prescription(
+                "Exercise: —", "Register a patient to begin."
+            )
 
     # -----------------------------------------------------
     # Patient changed
     # -----------------------------------------------------
+
+    def refresh(self):
+        """Reload patients when the page is shown (not mid-session)."""
+        if self.live_widget is None:
+            current = self.current_patient_id
+            self.load_patients()
+            if current is not None:
+                index = self.patient_combo.findData(current)
+                if index >= 0:
+                    self.patient_combo.setCurrentIndex(index)
+
+    def _clear_prescription(self, exercise_text, status_text):
+        self.current_exercise = None
+        self.current_config = None
+        self.current_parameters = None
+        self.current_prescription_id = None
+
+        self.exercise_label.setText(exercise_text)
+        self.side_label.setText("Affected side: —")
+        self.prescription_label.setText("")
+        self.session_status.setText(status_text)
+        self.start_button.setEnabled(False)
 
     def patient_changed(self, index):
 
@@ -368,58 +423,70 @@ class RehabPage(QWidget):
 
         self.current_patient_id = patient_id
 
-        recommendation = (
-            get_latest_approved_exercise(
-                patient_id
-            )
-        )
+        prescription = get_active_prescription(patient_id)
 
-        if recommendation is None:
-
-            self.current_exercise = None
-
-            self.exercise_label.setText(
-                "Exercise: No approved exercise"
-            )
-
-            self.side_label.setText(
-                "Affected side: —"
-            )
-
-            self.session_status.setText(
+        if prescription is None:
+            self._clear_prescription(
+                "Exercise: No approved exercise",
                 "No approved exercise found. "
-                "Go to Assessment and approve an exercise first."
+                "Go to Assessment and approve an exercise first.",
             )
-
             return
 
-        self.current_exercise = (
-            recommendation[1]
+        config = get_exercise_config(
+            prescription.get("exercise_id") or prescription["exercise"]
         )
 
-        areas = get_affected_areas(
-            patient_id
-        )
-
-        if areas:
-
-            self.current_side = (
-                areas[0][1].upper()
+        if config is None or not config.implemented:
+            self._clear_prescription(
+                f"Exercise: {prescription['exercise']}",
+                f"'{prescription['exercise']}' is approved but is not "
+                "supported by the movement-analysis system. Approve a "
+                "supported exercise on the Assessment page.",
             )
+            return
 
-            if self.current_side == "BILATERAL":
-                self.current_side = "LEFT"
+        side = prescription.get("affected_side")
 
-        else:
-            self.current_side = "LEFT"
+        if not side:
+            areas = get_affected_areas(patient_id)
+            side = areas[0][1] if areas else "LEFT"
+
+        side = side.upper()
+
+        # Bilateral impairment: the analysis follows one arm at a time;
+        # the original application defaulted to the left arm.
+        if side not in config.sides:
+            side = "LEFT"
+
+        self.current_side = side
+        self.current_config = config
+        self.current_exercise = config.display_name
+        self.current_prescription_id = prescription["recommendation_id"]
+        self.current_parameters = config.resolve_parameters(
+            prescription["parameters"]
+        )
 
         self.exercise_label.setText(
-            f"Exercise: {self.current_exercise}"
+            f"Exercise: {config.display_name}"
         )
 
         self.side_label.setText(
             f"Affected side: {self.current_side}"
         )
+
+        targets = ", ".join(
+            f"{p.label}: {self.current_parameters[p.name]:g} {p.unit}"
+            for p in config.adaptive_parameters
+        )
+        source = "" if prescription["parameters"] else " (default values)"
+
+        self.prescription_label.setText(
+            f"{targets}{source}. {config.instructions} "
+            f"Camera: {config.camera_view}."
+        )
+
+        self.start_button.setEnabled(True)
 
         self.session_status.setText(
             "Exercise approved. "
@@ -440,22 +507,50 @@ class RehabPage(QWidget):
             )
             return
 
-        if not self.current_exercise:
+        if self.current_config is None:
             QMessageBox.warning(
                 self,
                 "No Approved Exercise",
-                "This patient does not have an approved exercise.",
+                "This patient does not have an approved, supported "
+                "exercise.",
             )
             return
+
+        # ---------------------------------------------
+        # Live camera (created first: it owns the analyzer whose
+        # reference movement is displayed and used for scoring)
+        # ---------------------------------------------
+
+        self.live_widget = LivePoseWidget(
+            exercise=self.current_config,
+            affected_side=self.current_side,
+            parameters=self.current_parameters,
+        )
+
+        self.camera_card.layout().replaceWidget(
+            self.camera_placeholder,
+            self.live_widget,
+        )
+
+        self.camera_placeholder.deleteLater()
+        self.camera_placeholder = None
 
         # ---------------------------------------------
         # Reference skeleton
         # ---------------------------------------------
 
+        reference = self.live_widget.analyzer.reference
+
         self.reference_widget = (
             ReferenceSkeletonWidget(
                 exercise_name=self.current_exercise,
                 affected_side=self.current_side,
+                frames=reference.frames,
+                caption=(
+                    f"Illustrative synthetic reference "
+                    f"({self.current_config.reference_view} view)"
+                    if reference.synthetic else None
+                ),
             )
         )
 
@@ -467,26 +562,22 @@ class RehabPage(QWidget):
         self.reference_placeholder.deleteLater()
         self.reference_placeholder = None
 
-        # ---------------------------------------------
-        # Live camera
-        # ---------------------------------------------
-
-        self.live_widget = LivePoseWidget(
-            affected_side=self.current_side
-        )
-
-        self.camera_card.layout().replaceWidget(
-            self.camera_placeholder,
-            self.live_widget,
-        )
-
-        self.camera_placeholder.deleteLater()
-        self.camera_placeholder = None
-
         self.live_widget.start()
+
+        if self.live_widget.camera is None:
+            # Camera could not be opened: nothing will be recorded.
+            self._teardown_session_widgets(
+                "Camera could not be opened.\n"
+                "Connect a webcam and try again."
+            )
+            self.session_status.setText(
+                "Camera could not be opened. No session was started."
+            )
+            return
 
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.patient_combo.setEnabled(False)
 
         self.session_status.setText(
             f"Performing {self.current_exercise}. "
@@ -506,76 +597,148 @@ class RehabPage(QWidget):
 
         self.live_widget.stop()
 
-        save_session(
-            self.current_patient_id,
-            self.current_exercise,
-            stats["reps"],
-            stats["max_angle"],
-            stats["min_angle"],
-        )
-
-        # Remove live widget
-        self.camera_card.layout().removeWidget(
-            self.live_widget
-        )
-
-        self.live_widget.deleteLater()
-        self.live_widget = None
-
-        self.camera_placeholder = QLabel(
+        self._teardown_session_widgets(
             "Camera stopped.\n"
             "Start another session when ready."
         )
 
-        self.camera_placeholder.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.patient_combo.setEnabled(True)
+
+        if stats["frames_total"] == 0:
+            self.session_status.setText(
+                "No camera frames were processed, so the session was "
+                "not saved."
+            )
+            return
+
+        self.last_session_id = save_session_summary(
+            self.current_patient_id,
+            self.current_exercise,
+            stats,
+            prescription_id=self.current_prescription_id,
         )
 
-        self.camera_placeholder.setStyleSheet("""
-            color: #6b7280;
-            font-size: 14px;
-        """)
+        self.last_adaptation = None
+        adaptation_text = ""
 
-        self.camera_card.layout().addWidget(
-            self.camera_placeholder
+        try:
+            self.last_adaptation = propose_after_session(
+                self.current_patient_id,
+                self.last_session_id,
+            )
+        except Exception as error:
+            # The session itself is already saved; report the failure
+            # rather than inventing a decision.
+            logger.exception("Adaptation evaluation failed")
+            adaptation_text = (
+                f" | Adaptation evaluation failed: {error}"
+            )
+
+        if self.last_adaptation is not None:
+            adaptation_text = "\n" + self.last_adaptation["feedback"]
+            if self.last_adaptation["proposal_id"] is not None:
+                adaptation_text += (
+                    " (Proposed change awaiting therapist approval on the "
+                    "Progress page.)"
+                )
+
+        # The next attempt runs with the ACTIVE prescription: the
+        # controller's next_attempt_parameters (a proposed change only
+        # applies once a therapist approves it).
+        self._reload_prescription()
+
+        self.session_status.setText(
+            self._summary_text(stats) + adaptation_text
         )
 
-        # Remove reference widget
+    def _reload_prescription(self):
+        index = self.patient_combo.findData(self.current_patient_id)
+        if index >= 0:
+            self.patient_changed(index)
+
+    def _summary_text(self, stats):
+        target = stats.get("target_reps")
+        reps = (
+            f"{stats['reps']} / {target} repetitions"
+            if target else f"{stats['reps']} repetitions"
+        )
+
+        similarity = stats["trajectory_similarity"]
+        similarity_text = (
+            f"{similarity:.1f}%"
+            if similarity is not None
+            else "not available (no complete movement)"
+        )
+
+        return (
+            f"Session saved — {reps} | "
+            f"Movement similarity: {similarity_text}"
+            f"{self._tracking_text(stats.get('tracking'))}"
+        )
+
+    @staticmethod
+    def _tracking_text(tracking):
+        """Tracking breakdown, so an unassessable session is explainable."""
+        if not tracking or not tracking["frames_total"]:
+            return ""
+        logger.info("Session tracking: %s", tracking)
+        total = tracking["frames_total"]
+        text = (
+            f" | Arm tracked in {100 * tracking['measured_fraction']:.0f}% "
+            f"of {total} frames (no person detected: "
+            f"{100 * tracking['frames_no_pose'] / total:.0f}%, required "
+            f"landmarks not visible: "
+            f"{100 * tracking['frames_not_visible'] / total:.0f}%)"
+        )
+        missing = tracking["not_visible_by_landmark"]
+        if missing:
+            name, count = next(iter(missing.items()))
+            text += (
+                f"; most often not visible: {name} "
+                f"({100 * count / total:.0f}% of frames)"
+            )
+        return text
+
+    def _teardown_session_widgets(self, camera_message):
+
+        if self.live_widget is not None:
+            self.camera_card.layout().removeWidget(self.live_widget)
+            self.live_widget.deleteLater()
+            self.live_widget = None
+
+        if self.camera_placeholder is None:
+            self.camera_placeholder = QLabel(camera_message)
+            self.camera_placeholder.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
+            self.camera_placeholder.setStyleSheet("""
+                color: #6b7280;
+                font-size: 14px;
+            """)
+            self.camera_card.layout().addWidget(self.camera_placeholder)
+
         if self.reference_widget is not None:
-
             self.reference_widget.pause()
-
             self.reference_card.layout().removeWidget(
                 self.reference_widget
             )
-
             self.reference_widget.deleteLater()
             self.reference_widget = None
 
-        self.reference_placeholder = QLabel(
-            "Approved exercise reference\n"
-            "will appear here."
-        )
-
-        self.reference_placeholder.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
-
-        self.reference_placeholder.setStyleSheet("""
-            color: #6b7280;
-            font-size: 14px;
-        """)
-
-        self.reference_card.layout().addWidget(
-            self.reference_placeholder
-        )
-
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-
-        self.session_status.setText(
-            f"Session saved — "
-            f"{stats['reps']} repetitions | "
-            f"Movement similarity: "
-            f"{stats['trajectory_similarity']:.1f}%"
-        )
+        if self.reference_placeholder is None:
+            self.reference_placeholder = QLabel(
+                "Approved exercise reference\n"
+                "will appear here."
+            )
+            self.reference_placeholder.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
+            self.reference_placeholder.setStyleSheet("""
+                color: #6b7280;
+                font-size: 14px;
+            """)
+            self.reference_card.layout().addWidget(
+                self.reference_placeholder
+            )

@@ -19,10 +19,15 @@ from src.database.db import (
     get_affected_areas,
     save_clinical_assessment,
     save_recommendation,
+    set_recommendation_prescription,
     update_recommendation_status,
 )
 
-from src.assessment.recommendation import recommend_exercise
+from src.assessment.recommendation import (
+    DIAGNOSIS_OPTIONS,
+    recommend_exercise,
+)
+from src.exercises.catalogue import get_exercise_config, implemented_exercises
 
 
 class AssessmentPage(QWidget):
@@ -31,6 +36,7 @@ class AssessmentPage(QWidget):
         super().__init__()
 
         self.current_recommendation_id = None
+        self.current_affected_side = None
 
         # =================================================
         # Page styling
@@ -148,11 +154,7 @@ class AssessmentPage(QWidget):
 
         self.diagnosis_input = QComboBox()
         self.diagnosis_input.addItem("Select diagnosis")
-        self.diagnosis_input.addItems([
-            "Stroke",
-            "Post-stroke hemiparesis",
-            "Other",
-        ])
+        self.diagnosis_input.addItems(DIAGNOSIS_OPTIONS)
 
         form.addRow("Diagnosis:", self.diagnosis_input)
 
@@ -284,7 +286,7 @@ class AssessmentPage(QWidget):
         # -------------------------------------------------
 
         recommendation_title = QLabel(
-            "AI Exercise Recommendation"
+            "Exercise Recommendation (rule-based)"
         )
 
         recommendation_title.setStyleSheet(
@@ -326,6 +328,29 @@ class AssessmentPage(QWidget):
         recommendation_layout.addWidget(
             self.difficulty_label
         )
+
+        # -------------------------------------------------
+        # Therapist exercise selection
+        # -------------------------------------------------
+
+        choice_row = QHBoxLayout()
+        choice_row.addWidget(QLabel("Prescribe:"))
+
+        self.exercise_choice = QComboBox()
+        for config in implemented_exercises():
+            self.exercise_choice.addItem(
+                config.display_name, config.exercise_id
+            )
+        self.exercise_choice.setEnabled(False)
+        self.exercise_choice.setToolTip(
+            "Defaults to the rule-based suggestion; the therapist may "
+            "choose another supported exercise before approving."
+        )
+
+        choice_row.addWidget(self.exercise_choice)
+        choice_row.addStretch()
+
+        recommendation_layout.addLayout(choice_row)
 
         # -------------------------------------------------
         # Reason
@@ -390,6 +415,10 @@ class AssessmentPage(QWidget):
     # =====================================================
 
     def load_patients(self):
+        """(Re)fill the patient list below the "Select patient" item."""
+
+        while self.patient_input.count() > 1:
+            self.patient_input.removeItem(1)
 
         patients = get_all_patients()
 
@@ -402,6 +431,29 @@ class AssessmentPage(QWidget):
                 f"{patient_id} - {name}",
                 patient_id
             )
+
+    def refresh(self):
+        """
+        Reload patients (e.g. after a registration) without disturbing
+        the current selection or the form being filled in.
+        """
+
+        current = self.patient_input.currentData()
+
+        self.patient_input.blockSignals(True)
+        self.load_patients()
+        index = (
+            self.patient_input.findData(current)
+            if current is not None else 0
+        )
+        self.patient_input.setCurrentIndex(max(index, 0))
+        self.patient_input.blockSignals(False)
+
+        if current is not None and index < 0:
+            # The selected patient was deleted: drop the form and any
+            # recommendation shown for them.
+            self.clear_form()
+            self.patient_changed()
 
     # =====================================================
     # Patient changed
@@ -599,6 +651,14 @@ class AssessmentPage(QWidget):
             self.current_recommendation_id = (
                 recommendation_id
             )
+            self.current_affected_side = affected_side
+
+            choice = self.exercise_choice.findData(
+                recommendation["exercise_id"]
+            )
+            if choice >= 0:
+                self.exercise_choice.setCurrentIndex(choice)
+            self.exercise_choice.setEnabled(True)
 
             # ---------------------------------------------
             # Display recommendation
@@ -645,12 +705,33 @@ class AssessmentPage(QWidget):
         if self.current_recommendation_id is None:
             return
 
+        config = get_exercise_config(
+            self.exercise_choice.currentData()
+        )
+
+        if config is None:
+            return
+
         try:
+
+            # Record the exercise actually prescribed, with the
+            # catalogue's default parameters as the starting point.
+            set_recommendation_prescription(
+                self.current_recommendation_id,
+                exercise=config.display_name,
+                exercise_id=config.exercise_id,
+                affected_side=self.current_affected_side,
+                parameters=config.default_parameters(),
+                source="ASSESSMENT",
+            )
 
             update_recommendation_status(
                 self.current_recommendation_id,
                 "APPROVED"
             )
+
+            self.exercise_label.setText(config.display_name)
+            self.exercise_choice.setEnabled(False)
 
             self.reason_label.setText(
                 "✓ Therapist approved this exercise. "
@@ -714,6 +795,7 @@ class AssessmentPage(QWidget):
     def clear_recommendation(self):
 
         self.current_recommendation_id = None
+        self.exercise_choice.setEnabled(False)
 
         self.exercise_label.setText(
             "No recommendation generated."

@@ -1,0 +1,18 @@
+# Runtime dependencies, pinned to the versions installed in the project's
+# venv (Python 3.12.3) on which the test suite was run.
+#
+# torch: the venv has the CUDA 12.6 build (2.14.0+cu126). For the same
+# build use:  pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cu126
+# torch is only needed for the (disabled) BiLSTM and the Step A research
+# script; the application itself does not load it at start-up.
+numpy==1.26.4
+scipy==1.17.1
+pandas==3.0.5
+scikit-learn==1.9.1
+joblib==1.6.0
+torch==2.14.0
+mediapipe==0.10.21
+protobuf==4.25.9
+opencv-contrib-python==4.11.0.86
+PyQt6==6.11.0
+matplotlib==3.11.1

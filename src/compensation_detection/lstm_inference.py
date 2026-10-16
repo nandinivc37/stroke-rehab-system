@@ -1,13 +1,8 @@
-from pathlib import Path
-
 import numpy as np
 import torch
 import torch.nn as nn
 
-
-MODEL_PATH = Path(
-    "outputs/compensation_model_lstm/compensation_lstm_model.pt"
-)
+from src.paths import LSTM_MODEL_PATH as MODEL_PATH
 
 
 CLASS_NAMES = {

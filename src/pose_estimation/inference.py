@@ -89,7 +89,14 @@ compensation_buffer = LiveTemporalFeatureBuffer(
     rolling_window=5,
 )
 
-compensation_model = CompensationLSTM()
+# The Kinect-trained BiLSTM is disabled: its features are incompatible
+# with MediaPipe landmarks, so its predictions are not meaningful here
+# (see README, "Compensation detection status").
+COMPENSATION_MODEL_ENABLED = False
+
+compensation_model = (
+    CompensationLSTM() if COMPENSATION_MODEL_ENABLED else None
+)
 
 compensation_label = None
 compensation_confidence = None
@@ -153,7 +160,7 @@ while True:
             for index in required_landmarks
         )
 
-        if landmarks_visible:
+        if landmarks_visible and compensation_model is not None:
 
             base_features = extract_live_features(
                 results
@@ -407,7 +414,9 @@ while True:
 
         cv2.putText(
             display_frame,
-            "Compensation: --",
+            "Compensation: --"
+            if compensation_model is not None
+            else "Compensation: disabled (not validated)",
             (20, 185),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -417,7 +426,9 @@ while True:
 
         cv2.putText(
             display_frame,
-            "Confidence: collecting...",
+            "Confidence: collecting..."
+            if compensation_model is not None
+            else "",
             (20, 220),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
