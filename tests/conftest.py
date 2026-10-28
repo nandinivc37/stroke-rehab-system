@@ -77,7 +77,9 @@ def scripted_camera(monkeypatch):
             widget.status_label.setText("Could not open camera")
             widget.camera = None
             return
-        widget.camera = FakeCamera(len(script["results"]))
+        # Simulated 30 fps capture clock: time-based analysis must not
+        # depend on how fast the test loop runs.
+        widget.camera = FakeCamera(len(script["results"]), fps=30)
         widget.pose = ScriptedPose(script["results"])
         widget.analyzer.reset()
         widget.posture_monitor.reset()

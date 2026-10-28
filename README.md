@@ -6,30 +6,47 @@ movement with a reference using Dynamic Time Warping (DTW), and propose
 conservative next-session difficulty changes for therapist approval.
 
 > **Research prototype.** Nothing in this repository has been clinically
-> validated. Live webcam behaviour of the current version has **not been
-> tested** (see [Validation status](#validation-status)).
+> validated. Measurement accuracy on webcam data has **not been
+> validated**, and no live session has yet passed the assessment gate
+> (see [Validation status](#validation-status)).
 
 ## Quick start
 
-Requires Python 3.12 (tested with 3.12.3 on Ubuntu, using the project's
-`venv/`).
+Requires Python 3.12. Tested with 3.12.13 on Windows 11 (`.venv`) and,
+earlier, 3.12.3 on Ubuntu (`venv`).
+
+Windows (PowerShell or cmd):
+
+```
+python -m venv .venv
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python -m src.database.migrations   # verified backup + schema upgrade
+.venv\Scripts\python -m src.ui.app                # or double-click run.bat
+```
+
+Linux/macOS:
 
 ```bash
 python3 -m venv venv
-venv/bin/pip install -r requirements-dev.txt   # or requirements.txt
-venv/bin/python -m src.database.migrations     # verified backup + schema upgrade
-venv/bin/python -m src.ui.app                  # start the application
+venv/bin/pip install -r requirements-dev.txt
+venv/bin/python -m src.database.migrations
+venv/bin/python -m src.ui.app
 ```
 
-`python src/ui/app.py` also works from any directory; all data paths
+The application also upgrades the database on start-up (additive
+migration, after a verified backup in `data/backups/`). All data paths
 are resolved from the project root (`src/paths.py`).
+
+Pose model: `REHAB_POSE_COMPLEXITY` (0 lite, 1 full, 2 heavy; default 1,
+see [Frame rate](#frame-rate)) selects the MediaPipe model for the app
+and the Step B recorder. The value used is stored with every session.
 
 Run the tests (no webcam needed; Qt renders offscreen):
 
 ```bash
-venv/bin/python -m pytest                       # full suite
-venv/bin/python -m pytest tests/test_characterization_shoulder_raise.py  # original rep/DTW behaviour
-venv/bin/python -m pyflakes src tests           # static check
+python -m pytest                     # full suite
+python -m pytest tests/test_characterization_shoulder_raise.py  # original rep/DTW behaviour
+python -m pyflakes src tests         # static check
 ```
 
 `pytest.ini` disables third-party plugin autoloading because ROS
@@ -40,14 +57,21 @@ Tests never touch `data/rehab.db`: they use temporary databases.
 
 1. **Patients** — add a patient and the affected side/joint.
 2. **Assessment** — record a clinical assessment. A rule-based
-   recommender suggests an implemented exercise; the therapist may
-   choose another supported exercise, then approves it. Approval stores
-   the exercise, side and starting parameters.
+   recommender (`rules_v2`, see below) suggests an implemented exercise
+   and starting targets derived from the baseline ROM and restriction.
+   The therapist may choose another supported exercise and edit the
+   targets within the catalogue bounds, then approves. Approval stores
+   the exercise, side and the approved targets; any change from the
+   suggestion is recorded in the rationale.
 3. **Rehabilitation** — shows the approved exercise, targets and
    instructions. *Start Exercise* opens the webcam; the reference
    animation (synthetic, labelled as such) plays beside the live view.
-   *End Session* saves the session (one attempt) and runs the adaptive
-   controller. The controller shows feedback and what to do next
+   Capture and pose estimation run on a worker thread, so the
+   interface stays responsive. *End Session* saves the session (one
+   attempt, including a per-frame diagnostic log) and runs the adaptive
+   controller. Closing the application during a session saves it as
+   `INTERRUPTED_APP_CLOSED`; incomplete sessions are never used for
+   adaptation. The controller shows feedback and what to do next
    (repeat, continue, or a change proposed to the therapist).
 4. **Progress** — per-exercise history table and trends (missing values
    shown as "—", legacy sessions grouped separately), experimental
@@ -78,6 +102,72 @@ the DTW reference curve is computed with the same angle function as the
 live measurement. When the hips are not visible, the trunk axis falls
 back to the camera vertical (assumes an upright camera).
 
+**Coordinate conventions.** Angles use MediaPipe *world* landmarks
+(metres, origin between the hips), assumed to have x towards the image
+right, y down and z away from the camera. A trunk frame (lateral: right
+to left shoulder; up: hips to shoulders, orthogonalised; forward:
+lateral × up) makes every angle independent of seating position, image
+size and camera distance (scale-free). MediaPipe receives the
+**unmirrored** frame; only the display is mirrored. Mirroring the input
+would flip the frame's handedness and turn a forward raise into a
+backward one (`test_mirrored_input_breaks_the_flexion_plane`).
+
+The axis convention was **checked on real MediaPipe output** (2026-10-28,
+`python -m src.validation.axis_convention`, one public video of standing
+people, 40 usable frames). In frames of people facing the camera:
+* world x followed image x in 34/34;
+* y pointed down in 34/34;
+* the nose was nearer the camera than the shoulders in 33/34;
+* the trunk forward axis pointed at the camera in 34/34, and away from
+  it in 6/6 frames of people facing away.
+
+This checks the conventions, not angle accuracy.
+
+### Measurement definitions (metrics version 2)
+
+Sessions are tagged with `metrics_version`; the adaptive policy only
+compares sessions of the current version (2).
+
+* **Repetition:** the angle reaches the range target (`target_range`)
+  and stays at or above it for ≥ 0.13 s (and ≥ 2 frames), then returns
+  to the down threshold for ≥ 0.13 s. The time is measured from frame
+  timestamps, so the count does not depend on the frame rate (the
+  previous 5-frame rule needed 0.7 s above target at 7 fps). Frames
+  between the thresholds interrupt but do not reset the timers. A gap
+  of more than 1 s without a measured frame abandons the repetition in
+  progress (`interrupted_reps`). A repetition still in progress at the
+  end is not counted.
+* **Movement plane** (flexion/abduction): a repetition counts only if
+  most of its frames above the threshold lie within ±30° of the
+  prescribed plane; otherwise it is an off-plane repetition.
+* **Glitch filter:** a frame whose value changes faster than
+  1000°/s (500 %/s for reach) since the previous reading is rejected
+  (`implausible`).
+* **Peak ROM** (`peak_rom`): the highest 3-frame median among counted
+  repetitions and scored movements that were not off-plane. Single-frame
+  spikes, setup movements in another plane and off-plane raises do not
+  set it. `max_angle` keeps the raw session maximum for reference.
+* **DTW** (`dtw_similarity`, `dtw_mean_error_deg`): each movement
+  segment is aligned with the reference curve. The mean error is the
+  accumulated |Δangle| divided by the **warping-path length** (the mean
+  difference between matched samples). The original rule divided by
+  n + m and understated the error by up to about 2×. Similarity =
+  100 × (1 − error / 90°), clipped. The 90° scale is a convention, not a
+  calibrated threshold. Off-plane segments are reported but not
+  compared with the reference.
+* **Movement score** (stored in the historical column
+  `trajectory_similarity`, shown as "Movement score"):
+  0.5 × DTW similarity + 0.5 × 100 × range completion, averaged over
+  scored movements. It is **not** a pure similarity, and it has not
+  been shown to discriminate movement quality on real data.
+* **Smoothness** (velocity peaks): computed on a 10 Hz time base, which
+  removes most of the frame-rate inflation of the raw count (17 → 6
+  peaks for the same synthetic movement at 30 fps). It is still
+  sensitive below 10 fps. It is exploratory and not used anywhere.
+* **Per-frame log** (`session_frames`): time, status, angle, plane,
+  lowest required-landmark visibility and reference frame for every
+  processed frame. Numbers only, no images.
+
 The original 2D image-plane analysis is kept as
 `src/exercises/legacy.py` for regression tests and for interpreting
 historical sessions.
@@ -105,8 +195,8 @@ Adaptive controller `attempt_controller_v1` (`decide()`):
   * the active prescription's parameters (the difficulty settings
     `target_reps` and `target_range`, with bounds and steps from the
     catalogue);
-  * the attempt's session row: reps, ROM peak, DTW similarity,
-    off-plane reps, frames measured, frame errors and fps;
+  * the attempt's session row: reps, peak ROM, movement score,
+    off-plane reps, frames measured, frame errors, fps, session status;
   * the session history for the same exercise and side;
   * any compensation output, which is recorded but never used.
 * **Outputs:**
@@ -119,12 +209,12 @@ Adaptive controller `attempt_controller_v1` (`decide()`):
   * the attempt check and a compensation note.
 * **Actions:**
   * `UNABLE_TO_ASSESS`: the attempt is stale or mismatched (another
-    exercise, other settings, or not the latest session), tracking is
+    exercise, other settings, or not the latest session), the session is
+    incomplete (app closed, camera lost, analysis halted), tracking is
     poor (the same gate as the policy, below), or recorded values are
-    invalid (NaN, similarity outside 0–100, negative counts). Nothing is
-    scored and settings are unchanged.
-  * `REPEAT`: this attempt missed a target, which can be reps, ROM, DTW
-    similarity ≥ 70 or ≤ 20% off-plane reps. No DTW score counts as
+    invalid. Nothing is scored and settings are unchanged.
+  * `REPEAT`: this attempt missed a target: reps, peak ROM, movement
+    score ≥ 70, or ≤ 20% off-plane reps. A missing score counts as
     missed.
   * `MAINTAIN`: this attempt met every target, but the policy does not
     (yet) justify a change.
@@ -138,44 +228,86 @@ Adaptive controller `attempt_controller_v1` (`decide()`):
     attempt, and decreases only with `SIMPLIFY`.
 
   Any violation falls back to no change and is logged.
-* **Thresholds:** the controller adds none; it uses `PolicyConfig`. The
-  action, feedback and compensation note are stored in
-  `adaptation_decisions.inputs_json["controller"]`, so no schema change
-  was needed.
-* **Approval:** every change of settings, easier or harder, still
-  requires therapist approval.
+* **Approval:** every change of settings, easier or harder, requires
+  therapist approval. A rejected proposal leaves the previous
+  prescription active.
 
-Policy `conservative_v1` (all thresholds configurable in `PolicyConfig`):
+Policy `conservative_v2` (all thresholds configurable in `PolicyConfig`):
 
-* Uses only sessions of the same exercise and side with the current
-  metrics version, the **current parameters**, arm tracked in ≥ 80% of
-  frames, ≤ 5% and < 30 frame errors (30 consecutive errors halt live
-  analysis, leaving the rest of the session unmeasured) and a known
-  frame rate ≥ 10 fps. Excluded sessions and the reason are logged.
+* Uses only sessions of the same exercise and side that meet all of:
+  * metrics version 2 and the **current parameters**;
+  * status `COMPLETE`;
+  * arm tracked in ≥ 80% of frames;
+  * ≤ 5% and < 30 frame errors;
+  * a known frame rate ≥ 10 fps.
+
+  Excluded sessions and the reason are logged.
 * Fewer than 2 such sessions → no change (`INSUFFICIENT_DATA`).
-* **Increase** only if both of the last 2 sessions met the rep target,
-  the range target and DTW similarity ≥ 70, with ≤ 20% off-plane reps
-  and no similarity drop > 15 points. The range target rises one step if
-  both peaks already reached the next level; otherwise reps rise one step.
-* **Decrease** if both sessions completed < 60% of target reps (reps
-  down one step) or peaked more than two steps below the range target.
+* **Increase** only if both of the last 2 sessions met all of:
+  * the rep target and the range target (peak ROM);
+  * movement score ≥ 70;
+  * ≤ 20% off-plane reps;
+  * no score drop > 15 points.
+
+  The range target rises one step if both peaks already reached the
+  next level; otherwise reps rise one step.
+* **Decrease** (both sessions below target):
+  * **peak ROM below the range target in both → lower the range target
+    one step.** Below the range target no repetition can be counted, so
+    lowering the repetition target (what `conservative_v1` did) could
+    not help;
+  * otherwise, < 60% of target reps in both → lower reps one step.
+
+  Sessions without any measured in-plane movement are not evidence for
+  a decrease.
 * Mixed or middling results → maintain. One parameter, one step, within
   bounds. Every decision stores its inputs, previous and proposed
   parameters and a plain-language rationale.
-* Recorded values that cannot be correct (NaN, similarity outside
-  0–100, negative counts) exclude a session.
 * **Not used:** movement smoothness, experimental posture measurements,
   any compensation classifier output — none is validated. A missing
   compensation output is recorded as "not assessed", never as "no
   compensation".
-* Every change requires therapist approval; a proposal based on a
-  prescription that is no longer active cannot be approved.
+
+### Exercise recommendation (`rules_v2`, `src/assessment/recommendation.py`)
+
+1. The diagnosis must be Stroke or Post-stroke hemiparesis.
+2. The exercise's joint and region match the affected area, and it
+   supports the side.
+3. It addresses the recorded impairment. "Movement compensation" and
+   "Other" have no matching exercise.
+4. Exercises measured in degrees whose **lowest** range target exceeds
+   the baseline ROM are not suggested: no repetition could be counted.
+5. Starting targets depend on the restriction:
+   * "Pain-limited movement" or "Therapist specified": every target at
+     its lower bound;
+   * otherwise: the defaults, with the range target never above the
+     baseline ROM (rounded down to a step). This also covers "Limited
+     range".
+6. The first eligible exercise in catalogue order is suggested; the
+   others are listed as alternatives.
+
+The rules are deterministic and tested. They are not clinically
+validated: the restriction handling in particular needs
+physiotherapist review. The assessment has no severity field, so
+severity is not used.
 
 ## Compensation detection status
 
 **The original Kinect-trained BiLSTM is disabled** in the application
 and in the standalone prototype `src/pose_estimation/inference.py`. Its
-code and weights (`outputs/compensation_model_lstm/`) are unchanged.
+code and weights (`outputs/compensation_model_lstm/`) are unchanged. See
+[`docs/compensation_model_card.md`](docs/compensation_model_card.md) for:
+* the feature schema;
+* the evidence that it predicts "No Compensation" for every
+  MediaPipe-style window, including simulated compensations (a 2026-10-28
+  diagnostic);
+* the fact that its reported fixed-split metrics were selected on the
+  test participants (the training script is corrected but not re-run:
+  the Toronto data is not on this machine).
+
+**This copy of the project does not contain `outputs/compensation_step_a/`
+or `data/toronto/`**, so the Step A figures below could not be
+re-verified here.
 
 Why: it was trained on Toronto Rehab Stroke Pose Kinect features
 (pre-normalized skeletons, non-causal Savitzky–Golay smoothing, spine
@@ -383,25 +515,39 @@ is the accuracy of always predicting "No Compensation".
 
 SQLite at `data/rehab.db` (not in git). Schema upgrades are additive and
 idempotent (`src/database/migrations.py`, tracked by `PRAGMA
-user_version`); a hashed, integrity-checked backup is written to
-`data/backups/` before an existing database is migrated. Historical
-sessions keep NULL in all new columns; `metrics_version` NULL marks
-sessions recorded by the original implementation, whose angle columns
-are not comparable with current measurements.
+user_version`, currently 2); a hashed, integrity-checked backup is
+written to `data/backups/` before an existing database is migrated.
+
+Schema 2 adds these session columns:
+* `peak_rom`, `dtw_similarity`, `dtw_mean_error_deg`;
+* `session_status`, `interrupted_reps`;
+* `diagnostics_json`: pose model settings, threading, frame size and
+  per-stage timing.
+
+It also adds the `session_frames` table (the per-frame log).
+
+Historical sessions keep NULL in all new columns. `metrics_version` NULL
+marks sessions recorded by the original implementation, and 1 marks the
+first generic analyzer. Neither is used by the current policy. A dry run
+on a copy of the development database migrated 1 → 2 with every row
+preserved.
 
 ## Validation status
 
-| What | Status |
-|---|---|
-| Automated tests (`pytest`) | 283 passed, 0 failed, 1 skipped (2026-10-14). The skipped test loads Step A final models, which have not been trained (`--final-models` not run) |
-| Static check (`pyflakes src tests`) | 4 warnings, all unused variables/imports in original training scripts not modified in this work; none in new or changed code |
-| Rep counting / segmentation / DTW of the original implementation | preserved: characterization tests reproduce the original outputs exactly |
-| Multi-exercise analysis | offline only, synthetic poses |
-| Adaptive loop end to end (controller, approval, next attempt) | offline only, synthetic sessions through the real session page and database |
-| Live webcam operation | **Smoke-tested only**: 2 Shoulder Flexion sessions on one laptop webcam (2026-10-14). After the required-landmark fix, the arm was tracked in 88% of frames (previously 38%), but frame rate was 8.7 fps, below the 10 fps gate, so **no attempt has yet been assessable**. Angles, thresholds and DTW scores are not validated against a reference measurement |
-| Step A model comparison (Toronto, Kinect) | **COMPLETE**, all 19 folds × 3 models, integrity verified (`outputs/compensation_step_a/lopo_run_colab/`). Pooled macro-F1: RF original 0.438, RF `shared_v1` 0.420, BiLSTM 0.461 (majority baseline 0.222); differences not distinguishable; no model beats the baseline on patients. Final models not trained |
-| Compensation detection on MediaPipe | **NOT VALIDATED**; Step B not started |
-| Clinical validity of any measure or threshold | **NOT VALIDATED** |
+| What | Evidence | Status |
+|---|---|---|
+| Automated tests (`python -m pytest`, Windows 11, Python 3.12.13, 2026-10-28) | 428 passed, 0 failed, 2 skipped (Toronto data not present; Step A final models not trained). All modules now collect and run on Windows | passing; synthetic inputs only |
+| Static check (`pyflakes src tests`) | 4 warnings, all in original training scripts not modified in this work | — |
+| Original rep counting / segmentation / DTW (legacy config) | characterization tests reproduce the original outputs exactly | preserved |
+| Metrics v2 definitions (time-based counting, peak ROM, path-normalised DTW, glitch/gap handling) | automated, synthetic poses | implemented and tested; **not validated on webcam data** |
+| MediaPipe world-axis convention and trunk frame orientation | real MediaPipe on one public video | consistent (see Coordinate conventions) |
+| Angle accuracy, plane classification, rep-count agreement, score discrimination | `docs/validation_protocol.md`, `src/validation/evaluate_sessions.py` | **NOT TESTED**: no labelled recordings exist |
+| Live webcam sessions | 3 sessions on the Windows laptop (2026-10-22/28; complexity 2, GUI-thread processing): 5.7–7.8 fps, arm tracked in 63–80% of frames | all `UNABLE_TO_ASSESS`; **no live attempt has been assessable** |
+| Sustained processing capacity (threaded pipeline, video file instead of webcam, crowded multi-person scene, i5-13420H) | complexity 0: 9.2 fps, 1: 3.7 fps, 2: 2.2 fps | pessimistic scene; live single-person rate must be measured |
+| Adaptive loop end to end (controller, approval, rejection, next attempt, range-limited patient) | automated, synthetic sessions through the real session page and database | implemented and tested; not demonstrated live |
+| Step A model comparison (Toronto, Kinect) | README section above | not re-verifiable in this copy (outputs missing) |
+| Compensation detection on MediaPipe | diagnostic: original model outputs "No Compensation" for everything | **NOT VALIDATED, not deployed**; Step B not started |
+| Clinical validity of any measure, threshold or rule | — | **NOT VALIDATED** |
 
 Synthetic and simulated inputs show the software behaves as designed;
 they are not evidence of accuracy on real webcam data.
@@ -420,11 +566,19 @@ they are not evidence of accuracy on real webcam data.
 | Adaptive controller: rules, safety, uncertainty, compensation exclusion, propagation to the next attempt | `test_adaptive_controller.py` |
 | Progress page, dashboard | `test_progress_and_dashboard.py` |
 | Experimental posture measurements | `test_geometric_measures.py` |
+| Metrics v2: DTW normalisation, fps-independent counting, glitches, gaps, peak ROM, mirrored input, per-frame log | `test_metrics_v2.py` |
+| Worker thread, unmirrored input, persistence of v2 metrics and frame logs, save failure, app close, range-limited patient loop, rejection | `test_live_pipeline_v2.py` |
+| Recommendation rules (baseline ROM, restrictions, eligibility) and therapist-edited parameters | `test_recommendation_rules.py` |
+| Compensation-model input guard, live/training feature mismatch, validation tools | `test_compensation_and_validation_tools.py` |
 | shared_v1 features, Step B tooling | `test_shared_features.py`, `test_step_b_tooling.py` |
 | Step A checkpointing/resume, derived analysis | `test_step_a_checkpointing.py`, `test_step_a_analysis.py` |
 
 Live webcam validation: follow
-[`docs/webcam_validation_checklist.md`](docs/webcam_validation_checklist.md).
+[`docs/webcam_validation_checklist.md`](docs/webcam_validation_checklist.md)
+and the quantitative protocol
+[`docs/validation_protocol.md`](docs/validation_protocol.md) (criteria in
+[`docs/validation_criteria.json`](docs/validation_criteria.json), fixed
+before analysis).
 
 ## Known limitations
 
@@ -441,20 +595,26 @@ Live webcam validation: follow
 * **Reference movements are synthetic**, not clinician recordings.
 * **Forward reach and trunk-related measures depend on MediaPipe depth**,
   which is noisy.
-* **Frame rate is the current release blocker on the development
-  laptop** (Intel i5-1135G7, measured on battery with the powersave
-  governor):
-  * MediaPipe Pose with `model_complexity=2` (heavy) takes ~95 ms per
-    frame, about 94% of processing time. That caps the rate at ~10 fps
-    before camera decoding, and the webcam sessions achieved 8.7–9.3 fps.
-  * The 10 fps gate correctly marks those attempts UNABLE_TO_ASSESS.
-  * Input resolution does not change this (95–98 ms per frame from
-    640×360 to 1280×720).
-  * `model_complexity=1` measured ~42 ms per frame (~20 fps), but it
-    would change the pose model used for every measurement (and for the
-    Step B recorder). It is not applied.
-  * Performance on mains power with a performance power profile has not
-    been measured.
+* <a id="frame-rate"></a>**Frame rate is the current release blocker.**
+  * MediaPipe inference dominates the per-frame cost. Analysis and
+    drawing take about 7 ms. Moving capture and inference to a worker
+    thread keeps the interface responsive but cannot by itself raise the
+    frame rate.
+  * Earlier measurements:
+    * Ubuntu laptop (i5-1135G7, battery): complexity 2 took about 95 ms
+      per frame, giving 8.7–9.3 fps.
+    * Windows laptop (i5-13420H): 5.7–7.8 fps in live sessions.
+  * In both benchmarks on the Windows laptop, complexity 1 was about
+    3× faster than complexity 2, so the default is now **1**
+    (`src/pose_estimation/config.py`). Whether it reaches 10 fps live
+    has **not been measured yet**; every session now records its
+    per-stage timing in `diagnostics_json`.
+  * If the rate stays below 10 fps:
+    * use mains power and a performance power plan;
+    * try `REHAB_POSE_COMPLEXITY=0` (lite, lower accuracy);
+    * as a code change, read the camera on a separate thread so that
+      decoding overlaps inference.
+  * The 10 fps gate itself is unchanged.
 * **Setup movement before and after an exercise** is analysed like
   exercise movement:
   * Frames without a person count against the tracking percentage.
@@ -467,6 +627,8 @@ Live webcam validation: follow
   and are not used by the adaptive policy.
 * The original Toronto training scripts in `src/compensation_detection/`
   (`train_*`, `build_*`) still use paths relative to the project root.
+* **Live sessions recorded before metrics v2** (the 3 sessions in the
+  development database) are kept but never used by the adaptive policy.
 
 ## Project layout
 
@@ -484,9 +646,14 @@ src/
   data_collection/    Step B landmark recorder
   simulation/         synthetic poses/sessions for tests (not data)
   quality_assessment/ DTW
+  validation/         axis-convention check, evaluation of recorded
+                      sessions against manual counts / goniometer
+  pose_estimation/    shared MediaPipe settings (config.py); standalone
+                      prototype (inference.py, BiLSTM disabled)
   paths.py            project-root-relative paths
 tests/                pytest suite
-docs/                 Step B protocol
+docs/                 validation protocol and criteria, Step B protocol,
+                      compensation model card, webcam checklist
 ```
 
 ## Housekeeping awaiting a decision

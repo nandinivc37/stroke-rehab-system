@@ -264,17 +264,35 @@ def empty_results():
 
 
 class FakeCamera:
-    """Minimal cv2.VideoCapture stand-in that yields blank frames."""
+    """
+    Minimal cv2.VideoCapture stand-in that yields blank frames.
 
-    def __init__(self, frames, width=320, height=240):
+    With fps set, timestamp() reports the capture time of the last frame
+    read on a simulated clock at that rate, so time-based analysis does
+    not depend on how fast a test loop runs. Without fps, timestamp()
+    returns None and the widget uses its own clock.
+    """
+
+    def __init__(self, frames, width=320, height=240, fps=None):
         self._remaining = frames
         self._frame = np.zeros((height, width, 3), dtype=np.uint8)
+        self.fps = fps
+        self._reads = 0
 
     def read(self):
         if self._remaining <= 0:
             return False, None
         self._remaining -= 1
+        self._reads += 1
         return True, self._frame.copy()
+
+    def timestamp(self):
+        if not self.fps or not self._reads:
+            return None
+        return (self._reads - 1) / self.fps
+
+    def set(self, *_args):
+        return True
 
     def isOpened(self):
         return True

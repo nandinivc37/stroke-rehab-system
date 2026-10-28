@@ -34,6 +34,18 @@ class RepCountingConfig:
     up_threshold: float
     down_threshold: float
     debounce_frames: int = 5
+    # Timestamp-based debounce (metrics v2). When set and frames carry
+    # timestamps, a stage change needs the angle beyond the threshold
+    # for at least this long (and at least min_debounce_frames frames)
+    # instead of a fixed number of frames, so counting does not depend
+    # on the frame rate. 0.13 s equals the original 5-frame criterion
+    # at 30 fps (4 frame intervals). None keeps the frame-count rule.
+    min_dwell_s: Optional[float] = None
+    min_debounce_frames: int = 2
+    # A gap longer than this between measured frames (tracking lost)
+    # abandons a repetition in progress instead of crediting a movement
+    # that was not observed. None disables the check.
+    max_gap_s: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -58,9 +70,16 @@ class SegmentationConfig:
 
 @dataclass(frozen=True)
 class DtwConfig:
-    # Score = (1 - range_weight) * DTW similarity
-    #         + range_weight * range completion
+    # Movement score = (1 - range_weight) * DTW similarity
+    #                  + range_weight * range completion
     range_weight: float = 0.5
+    # How the accumulated DTW cost is turned into a mean angular error:
+    #   "n_plus_m": cost / (n + m), the original rule. n + m is an upper
+    #       bound on the warping-path length, so the error is understated
+    #       (by up to ~2x) and the similarity overstated.
+    #   "path": cost / number of steps on the optimal warping path, i.e.
+    #       the actual mean absolute difference between matched samples.
+    normalization: str = "n_plus_m"
 
 
 @dataclass(frozen=True)
@@ -135,6 +154,18 @@ class ExerciseConfig:
     reference_view: str = "front"
     sides: Sequence[str] = ("LEFT", "RIGHT")
     visibility_threshold: float = 0.5
+
+    # Measurement definitions (see ExerciseAnalyzer.summary):
+    #   1 = original rules (raw single-frame peaks, every segment scored,
+    #       smoothness on raw frames);
+    #   2 = peak ROM from in-plane movements (3-frame median), off-plane
+    #       segments not scored, smoothness on a 10 Hz time base.
+    metrics_version: int = 1
+    # Frames whose measured value changes faster than this (units of
+    # angle_unit per second) since the previous measured frame are
+    # rejected as tracking glitches (e.g. a left/right landmark swap).
+    # None disables the check.
+    max_speed: Optional[float] = None
 
     # Shown in the exercise catalogue / UI.
     instructions: str = ""

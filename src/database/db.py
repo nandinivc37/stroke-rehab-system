@@ -449,7 +449,15 @@ if __name__ == "__main__":
 
 # Metrics produced by src/exercises/analyzer.py with the exercise
 # catalogue. Sessions recorded before this have metrics_version NULL.
-METRICS_VERSION = 1
+#   1 = first generic analyzer (frame-count debounce, raw peaks,
+#       DTW cost / (n + m));
+#   2 = time-based debounce, peak ROM from in-plane movements, DTW
+#       normalised by warping-path length, off-plane segments unscored.
+# The adaptive policy only compares sessions of the current version.
+METRICS_VERSION = 2
+
+SESSION_STATUS_COMPLETE = "COMPLETE"
+SESSION_STATUS_APP_CLOSED = "INTERRUPTED_APP_CLOSED"
 
 
 def _dict_rows(cursor):
@@ -496,8 +504,14 @@ def set_recommendation_prescription(
     affected_side,
     parameters,
     source,
+    reason=None,
+    difficulty=None,
 ):
-    """Record which exercise/parameters a PENDING recommendation assigns."""
+    """
+    Record which exercise/parameters a PENDING recommendation assigns.
+    reason/difficulty, when given, replace the stored rationale (e.g. to
+    record a therapist override); otherwise they are kept.
+    """
 
     conn = get_connection()
     conn.execute("""
@@ -506,7 +520,9 @@ def set_recommendation_prescription(
             exercise_id = ?,
             affected_side = ?,
             parameters_json = ?,
-            source = ?
+            source = ?,
+            reason = COALESCE(?, reason),
+            difficulty = COALESCE(?, difficulty)
         WHERE recommendation_id = ?
           AND status = 'PENDING'
     """, (
@@ -515,6 +531,8 @@ def set_recommendation_prescription(
         affected_side,
         _json_or_none(parameters),
         source,
+        reason,
+        difficulty,
         recommendation_id,
     ))
     conn.commit()
@@ -526,17 +544,63 @@ def save_session_summary(
     exercise_name,
     stats,
     prescription_id=None,
+    session_status=None,
 ):
     """
     Persist a session summary produced by ExerciseAnalyzer (plus the
-    widget's experimental posture summary). Values that were not
-    measured are stored as NULL. Compensation-classifier columns are
-    left NULL: no validated classifier is in use.
+    widget's experimental posture summary and diagnostics) and its
+    per-frame log, in one transaction. Values that were not measured
+    are stored as NULL. Compensation-classifier columns are left NULL:
+    no validated classifier is in use.
+
+    session_status overrides stats["session_status"] (e.g. when the
+    application was closed during the session).
 
     Returns the new session_id.
     """
 
+    status = (
+        session_status or stats.get("session_status")
+        or SESSION_STATUS_COMPLETE
+    )
+
     conn = get_connection()
+    try:
+        with conn:
+            session_id = _insert_session(
+                conn, patient_id, exercise_name, stats, prescription_id,
+                status,
+            )
+            frames = stats.get("frame_log") or []
+            conn.executemany("""
+                INSERT INTO session_frames(
+                    session_id, frame_index, t_s, status, angle, plane,
+                    min_visibility, reference_frame
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                (session_id, index) + tuple(_frame_values(frame))
+                for index, frame in enumerate(frames)
+            ])
+    finally:
+        conn.close()
+    return session_id
+
+
+def _frame_values(frame):
+    t_s, status, angle, plane, visibility, reference_frame = frame
+    return (
+        None if t_s is None else round(float(t_s), 4),
+        status,
+        None if angle is None else round(float(angle), 3),
+        None if plane is None else round(float(plane), 2),
+        None if visibility is None else round(float(visibility), 3),
+        reference_frame,
+    )
+
+
+def _insert_session(conn, patient_id, exercise_name, stats,
+                    prescription_id, status):
     cursor = conn.execute("""
         INSERT INTO sessions(
             patient_id, exercise, reps, max_angle, min_angle,
@@ -545,10 +609,12 @@ def save_session_summary(
             trajectory_similarity, valid_segments, mean_velocity_peaks,
             segments_json, duration_s, frames_total, frames_with_pose,
             frames_measured, frame_errors, mean_fps,
-            experimental_posture_json
+            experimental_posture_json, peak_rom, dtw_similarity,
+            dtw_mean_error_deg, session_status, interrupted_reps,
+            diagnostics_json
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         patient_id,
         exercise_name,
@@ -573,11 +639,27 @@ def save_session_summary(
         stats.get("frame_errors"),
         stats.get("mean_fps"),
         _json_or_none(stats.get("experimental_posture")),
+        stats.get("peak_rom"),
+        stats.get("dtw_similarity"),
+        stats.get("dtw_mean_error_deg"),
+        status,
+        stats.get("interrupted_reps"),
+        _json_or_none(stats.get("diagnostics")),
     ))
-    conn.commit()
-    session_id = cursor.lastrowid
-    conn.close()
-    return session_id
+    return cursor.lastrowid
+
+
+def get_session_frames(session_id):
+    """Per-frame diagnostic log of a session, in frame order."""
+
+    conn = get_connection()
+    try:
+        return _dict_rows(conn.execute(
+            "SELECT * FROM session_frames WHERE session_id = ? "
+            "ORDER BY frame_index", (session_id,)
+        ))
+    finally:
+        conn.close()
 
 
 def get_sessions(patient_id, exercise_id=None, affected_side=None):
@@ -783,6 +865,11 @@ def delete_patient(patient_id, backup_dir=None):
     conn = get_connection()
     try:
         with conn:
+            # Per-frame logs are keyed by session, not patient.
+            conn.execute("""
+                DELETE FROM session_frames WHERE session_id IN (
+                    SELECT session_id FROM sessions WHERE patient_id = ?)
+            """, (patient_id,))
             for table in PATIENT_TABLES:
                 conn.execute(f"DELETE FROM {table} WHERE patient_id = ?",
                              (patient_id,))

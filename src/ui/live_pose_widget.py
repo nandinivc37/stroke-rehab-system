@@ -1,4 +1,5 @@
 import logging
+import statistics
 import sys
 import time
 from collections import deque
@@ -6,7 +7,7 @@ from collections import deque
 import cv2
 import mediapipe as mp
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
@@ -16,12 +17,14 @@ from src.compensation_detection.geometric_measures import (
 )
 from src.exercises.analyzer import (
     ExerciseAnalyzer,
+    STATUS_IMPLAUSIBLE,
     STATUS_NO_POSE,
     STATUS_NOT_VISIBLE,
     STATUS_OK,
     STATUS_UNMEASURABLE,
 )
 from src.exercises.legacy import LEGACY_SHOULDER_RAISE_2D
+from src.pose_estimation.config import pose_settings
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,11 @@ MAX_CONSECUTIVE_READ_FAILURES = 60
 # the same value the adaptive policy's frame-rate gate checks.
 RECENT_FPS_FRAMES = 20
 
+# Session status values stored in sessions.session_status.
+SESSION_COMPLETE = "COMPLETE"
+SESSION_ANALYSIS_HALTED = "ANALYSIS_HALTED"
+SESSION_CAMERA_LOST = "CAMERA_LOST"
+
 FPS_STYLE = """
     background-color: #111827;
     color: {colour};
@@ -51,6 +59,52 @@ FPS_OK_COLOUR = "#ffffff"
 FPS_LOW_COLOUR = "#fde047"
 
 
+def _timing_summary(values_s):
+    if not values_s:
+        return None
+    ms = sorted(1000.0 * v for v in values_s)
+    return {
+        "median_ms": round(statistics.median(ms), 1),
+        "p90_ms": round(ms[min(len(ms) - 1, int(0.9 * len(ms)))], 1),
+        "mean_ms": round(sum(ms) / len(ms), 1),
+        "n": len(ms),
+    }
+
+
+class CaptureWorker(QThread):
+    """
+    Runs camera capture, pose estimation and analysis off the GUI
+    thread. Only the worker touches the camera, the pose model and the
+    analyzer while it runs; results reach the GUI through the queued
+    frame_ready signal.
+    """
+
+    frame_ready = pyqtSignal(object)
+
+    def __init__(self, widget):
+        super().__init__()
+        self.widget = widget
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        widget = self.widget
+        while not self._stop_requested and not widget.analysis_halted:
+            output = widget._step()
+            if output is None:
+                self.msleep(5)
+                continue
+            # Drop the picture (not the analysis) if the GUI has not
+            # shown the previous one yet, so frames never queue up.
+            if widget._display_pending:
+                output["display"] = None
+            else:
+                widget._display_pending = output["display"] is not None
+            self.frame_ready.emit(output)
+
+
 class LivePoseWidget(QWidget):
 
     def __init__(
@@ -59,11 +113,13 @@ class LivePoseWidget(QWidget):
         affected_side="LEFT",
         parameters=None,
         parent=None,
+        threaded=True,
     ):
         super().__init__(parent)
 
         self.exercise = exercise or LEGACY_SHOULDER_RAISE_2D
         self.affected_side = affected_side.upper()
+        self.threaded = threaded
 
         self.analyzer = ExerciseAnalyzer(
             self.exercise,
@@ -79,11 +135,18 @@ class LivePoseWidget(QWidget):
 
         self.camera = None
         self.pose = None
+        self.worker = None
+        self.pose_config = None
+        self._display_pending = False
 
         self.consecutive_errors = 0
         self.consecutive_read_failures = 0
+        self.read_failures_total = 0
+        self.camera_lost = False
         self.last_error = None
         self.analysis_halted = False
+        self.frame_size = None
+        self._timings = {"read": [], "inference": [], "analysis": []}
 
         self.video_label = QLabel()
         self.video_label.setAlignment(
@@ -126,6 +189,7 @@ class LivePoseWidget(QWidget):
         layout.addWidget(self.fps_label)
         layout.addWidget(self.status_label)
 
+        # Unthreaded fallback (threaded=False).
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
 
@@ -165,6 +229,11 @@ class LivePoseWidget(QWidget):
             30
         )
 
+        # Keep only the newest frame where the backend supports it, so
+        # analysis is not fed stale buffered frames when it is slower
+        # than the camera.
+        self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
         if not self.camera.isOpened():
             self.status_label.setText(
                 "Could not open camera"
@@ -172,83 +241,130 @@ class LivePoseWidget(QWidget):
             self.camera = None
             return
 
-        self.pose = mp.solutions.pose.Pose(
-            static_image_mode=False,
-            model_complexity=2,
-            smooth_landmarks=True,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.7,
-        )
+        self.pose_config = pose_settings()
+        self.pose = mp.solutions.pose.Pose(**self.pose_config)
 
-        self.analyzer.reset()
-        self.posture_monitor.reset()
-        self.frame_times.clear()
-        self.consecutive_errors = 0
-        self.consecutive_read_failures = 0
-        self.last_error = None
-        self.analysis_halted = False
+        self._reset_session_state()
 
         self.status_label.setText(
             f"Monitoring {self.affected_side.lower()} arm"
         )
 
-        self.timer.start(30)
+        if self.threaded:
+            self.worker = CaptureWorker(self)
+            self.worker.frame_ready.connect(self._present)
+            self.worker.start()
+        else:
+            self.timer.start(30)
+
+    def _reset_session_state(self):
+        self.analyzer.reset()
+        self.posture_monitor.reset()
+        self.frame_times.clear()
+        self.consecutive_errors = 0
+        self.consecutive_read_failures = 0
+        self.read_failures_total = 0
+        self.camera_lost = False
+        self.last_error = None
+        self.analysis_halted = False
+        self._display_pending = False
+        self._timings = {"read": [], "inference": [], "analysis": []}
+
+    def _stop_worker(self):
+        """Stop the capture thread and wait for it (idempotent)."""
+
+        worker = self.worker
+        if worker is None:
+            return
+        worker.request_stop()
+        if not worker.wait(3000):
+            # A blocked camera read: releasing the device unblocks it.
+            logger.warning("Capture thread did not stop; releasing camera")
+            if self.camera is not None:
+                self.camera.release()
+            worker.wait(3000)
+        self.worker = None
 
     # -----------------------------------------------------
     # Per-frame processing
     # -----------------------------------------------------
 
     def update_frame(self):
+        """Process one frame and show it (unthreaded path and tests)."""
+        output = self._step()
+        if output is not None:
+            self._present(output)
+
+    def _timestamp(self):
+        stamp = getattr(self.camera, "timestamp", None)
+        value = stamp() if callable(stamp) else None
+        return value if value is not None else time.monotonic()
+
+    def _step(self):
+        """
+        Read, analyse and draw one frame without touching any Qt widget
+        (safe on the capture thread). Returns the output to present, or
+        None when no frame was read and nothing changed.
+        """
 
         if self.camera is None or self.analysis_halted:
-            return
+            return None
 
+        t0 = time.perf_counter()
         success, frame = self.camera.read()
+        read_time = time.perf_counter() - t0
 
         if not success:
             self.consecutive_read_failures += 1
+            self.read_failures_total += 1
 
             if (
                 self.consecutive_read_failures
                 == MAX_CONSECUTIVE_READ_FAILURES
             ):
-                self.status_label.setText(
-                    "Camera is not delivering frames. "
-                    "Check the connection and restart the session."
-                )
-            return
+                self.camera_lost = True
+                return {
+                    "display": None,
+                    "status": (
+                        "Camera is not delivering frames. "
+                        "Check the connection and restart the session."
+                    ),
+                    "fps": None,
+                }
+            return None
 
+        timestamp = self._timestamp()
         self.consecutive_read_failures = 0
-        self.frame_times.append(time.monotonic())
+        self.frame_times.append(timestamp)
+        self._timings["read"].append(read_time)
+        self.frame_size = (int(frame.shape[1]), int(frame.shape[0]))
 
         # A Qt slot must never raise: PyQt6 aborts the whole application
         # on an unhandled exception. Errors are logged, counted in the
         # session summary, and shown; no substitute values are produced.
         try:
-            self._process_frame(frame)
+            display, status = self._process_frame(frame, timestamp)
             self.consecutive_errors = 0
 
         except Exception as error:
             logger.exception("Frame processing failed")
 
-            self.analyzer.record_error()
+            self.analyzer.record_error(timestamp)
             self.consecutive_errors += 1
             self.last_error = f"{type(error).__name__}: {error}"
+            display = None
 
             if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                 self.analysis_halted = True
-                self.timer.stop()
-                self.status_label.setText(
+                status = (
                     "Analysis stopped after repeated processing errors "
                     f"({self.last_error}). End the session; "
                     "data recorded so far is kept."
                 )
             else:
-                self.status_label.setText(
-                    f"Frame processing error: {self.last_error}"
-                )
+                status = f"Frame processing error: {self.last_error}"
 
-        self._update_fps_label()
+        return {"display": display, "status": status, "fps": self._fps()}
 
     def recent_fps(self):
         """Processed frames per second over the last few frames."""
@@ -259,31 +375,27 @@ class LivePoseWidget(QWidget):
             return None
         return (len(self.frame_times) - 1) / span
 
-    def _update_fps_label(self):
+    def _fps(self):
+        """(text, colour) for the frame-rate label."""
         recent = self.recent_fps()
         average = self.analyzer.mean_fps
 
         if recent is None or average is None:
-            self.fps_label.setText("Frame rate: measuring…")
-            colour = FPS_OK_COLOUR
-        else:
-            text = (
-                f"Frame rate: {recent:.1f} fps now · "
-                f"{average:.1f} fps session average"
+            return "Frame rate: measuring…", FPS_OK_COLOUR
+
+        text = (
+            f"Frame rate: {recent:.1f} fps now · "
+            f"{average:.1f} fps session average"
+        )
+        if average < self.min_fps:
+            text += (
+                f" — below {self.min_fps:g} fps: this attempt "
+                "cannot be assessed"
             )
-            if average < self.min_fps:
-                text += (
-                    f" — below {self.min_fps:g} fps: this attempt "
-                    "cannot be assessed"
-                )
-                colour = FPS_LOW_COLOUR
-            else:
-                colour = FPS_OK_COLOUR
-            self.fps_label.setText(text)
+            return text, FPS_LOW_COLOUR
+        return text, FPS_OK_COLOUR
 
-        self.fps_label.setStyleSheet(FPS_STYLE.format(colour=colour))
-
-    def _process_frame(self, frame):
+    def _process_frame(self, frame, timestamp):
 
         # MediaPipe receives the original (unmirrored) frame.
         rgb = cv2.cvtColor(
@@ -291,11 +403,13 @@ class LivePoseWidget(QWidget):
             cv2.COLOR_BGR2RGB
         )
 
+        t0 = time.perf_counter()
         results = self.pose.process(rgb)
+        t1 = time.perf_counter()
 
         analysis = self.analyzer.update(
             results,
-            time.monotonic(),
+            timestamp,
         )
 
         self.posture_monitor.update(
@@ -317,9 +431,29 @@ class LivePoseWidget(QWidget):
         display = cv2.flip(display, 1)
 
         self._draw_overlay(display, analysis)
-        self._show(display)
 
-        self.status_label.setText(self._status_text())
+        self._timings["inference"].append(t1 - t0)
+        self._timings["analysis"].append(time.perf_counter() - t1)
+
+        return display, self._status_text()
+
+    def _present(self, output):
+        """GUI-thread half: show a step's output."""
+
+        if self.analysis_halted:
+            self.timer.stop()
+
+        if output.get("display") is not None:
+            self._show(output["display"])
+        self._display_pending = False
+
+        if output.get("status"):
+            self.status_label.setText(output["status"])
+
+        if output.get("fps") is not None:
+            text, colour = output["fps"]
+            self.fps_label.setText(text)
+            self.fps_label.setStyleSheet(FPS_STYLE.format(colour=colour))
 
     def _reps_text(self):
         target = self.analyzer.parameters.get("target_reps")
@@ -341,7 +475,7 @@ class LivePoseWidget(QWidget):
             ]
         elif analysis.status == STATUS_NOT_VISIBLE:
             lines = [("Keep affected arm visible", (0, 200, 255), 0.8)]
-        elif analysis.status == STATUS_UNMEASURABLE:
+        elif analysis.status in (STATUS_UNMEASURABLE, STATUS_IMPLAUSIBLE):
             lines = [("Cannot measure this frame", (0, 200, 255), 0.8)]
         elif analysis.status == STATUS_NO_POSE:
             lines = [("Pose not detected", (0, 200, 255), 0.8)]
@@ -411,15 +545,40 @@ class LivePoseWidget(QWidget):
     # Results
     # -----------------------------------------------------
 
+    def session_status(self):
+        if self.analysis_halted:
+            return SESSION_ANALYSIS_HALTED
+        if self.camera_lost:
+            return SESSION_CAMERA_LOST
+        return SESSION_COMPLETE
+
+    def diagnostics(self):
+        """Pipeline configuration and per-stage timing for this session."""
+        return {
+            "pose_settings": self.pose_config,
+            "threaded": self.threaded,
+            "frame_size": self.frame_size,
+            "camera_read_failures": self.read_failures_total,
+            "timing": {
+                stage: _timing_summary(values)
+                for stage, values in self._timings.items()
+            },
+        }
+
     def get_stats(self):
+        # The analyzer must not change while it is summarised.
+        self._stop_worker()
         stats = self.analyzer.summary()
         stats["experimental_posture"] = self.posture_monitor.summary()
         stats["analysis_halted"] = self.analysis_halted
         stats["last_error"] = self.last_error
+        stats["session_status"] = self.session_status()
+        stats["diagnostics"] = self.diagnostics()
         return stats
 
     def stop(self):
 
+        self._stop_worker()
         self.timer.stop()
 
         if self.pose is not None:

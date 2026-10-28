@@ -101,8 +101,12 @@ of the Toronto data, and must be reported as such.
 * Whole trunk including both hips visible throughout; no table in front
   of the participant (tables hide the hips).
 * Even lighting, plain background, fitted clothing.
-* Same MediaPipe settings as the application (`model_complexity=2`,
-  `smooth_landmarks=True`, confidence 0.7). The recorder enforces this.
+* Same MediaPipe settings as the application: the shared
+  `src/pose_estimation/config.py` (`model_complexity` from
+  `REHAB_POSE_COMPLEXITY`, default 1; `smooth_landmarks=True`;
+  confidence 0.7). The recorder uses this config and stores the settings
+  in each recording's metadata. Use the same complexity for every
+  recording and for the application being evaluated.
 * Note the camera model, resolution and measured frame rate (the
   recorder stores the frame rate).
 

@@ -31,9 +31,11 @@ from src.database.db import get_all_patients, get_sessions
 from src.exercises.catalogue import get_exercise_config
 from src.progress.history import (
     MISSING,
+    PEAK_FIELD,
     TABLE_HEADERS,
     fmt,
     group_sessions,
+    peak_series,
     posture_text,
     series,
     table_row,
@@ -493,11 +495,12 @@ class ProgressPage(QWidget):
 
         panels = [
             ("Repetitions", "reps", "target_reps", ""),
-            ("Peak range", "max_angle", "target_range", unit),
+            ("Peak range", PEAK_FIELD, "target_range", unit),
         ]
         if not key.legacy:
             panels.append(
-                ("Movement similarity", "trajectory_similarity", None, "%")
+                ("Movement score (DTW shape + range, 0-100)",
+                 "trajectory_similarity", None, "")
             )
 
         if key.legacy:
@@ -518,7 +521,7 @@ class ProgressPage(QWidget):
             axes = [axes]
 
         for ax, (label, field, target_name, suffix) in zip(axes, panels):
-            xs, ys = series(sessions, field)
+            xs, ys = series(sessions, field) if field != PEAK_FIELD                 else peak_series(sessions)
             ax.plot(xs, ys, color=SERIES_COLOUR, linewidth=1.6,
                     marker="o", markersize=6, label="Measured")
 

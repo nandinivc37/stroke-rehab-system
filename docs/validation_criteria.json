@@ -1,0 +1,26 @@
+{
+  "status": "PROPOSED - the project team must confirm or change these values BEFORE any validation recording is analysed, then not change them afterwards.",
+  "basis": "Engineering acceptance limits for a research prototype. Not clinical limits. Markerless-vs-goniometer agreement reported in the literature is typically within 5-10 degrees for shoulder and elbow angles under good conditions.",
+  "fps": {
+    "min_mean_fps": 10.0
+  },
+  "rep_count": {
+    "min_sessions_per_exercise": 3,
+    "min_exact_match_rate": 0.8,
+    "max_mean_abs_error_reps": 0.5
+  },
+  "angle": {
+    "min_readings_per_exercise": 12,
+    "max_mean_abs_error": 10.0,
+    "max_abs_bias": 5.0,
+    "match_window_s": 0.25
+  },
+  "plane": {
+    "min_reps": 10,
+    "min_accuracy": 0.9
+  },
+  "score_discrimination": {
+    "min_sessions_per_label": 3,
+    "min_auc_correct_vs_other": 0.8
+  }
+}

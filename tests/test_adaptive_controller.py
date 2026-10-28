@@ -41,20 +41,37 @@ FLEXION = get_exercise_config("shoulder_flexion")
 PARAMS = {"target_reps": 10, "target_range": 80.0}
 
 
+def check_realistic(reps, off_plane, peak, params):
+    """
+    The repetition counter only counts once the angle reaches the range
+    target (rep threshold = target_range), so a session with counted
+    repetitions always has a peak at or above it. Fixtures that violate
+    this test states the real pipeline cannot produce.
+    """
+    if (reps or off_plane) and (peak is None or peak < params["target_range"]):
+        raise ValueError(
+            f"unrealistic fixture: {reps} reps with peak {peak} below the "
+            f"range target {params['target_range']}"
+        )
+
+
 def attempt(sid, reps=10, peak=95.0, similarity=85.0, params=None,
             off_plane=0, frames=300, measured=300, errors=0, fps=25.0,
             exercise_id="shoulder_flexion", **extra):
     params = params or PARAMS
+    check_realistic(reps, off_plane, peak, params)
     row = {
         "session_id": sid,
         "session_date": f"2026-10-{sid:02d} 10:00:00",
         "exercise_id": exercise_id,
-        "metrics_version": 1,
+        "metrics_version": 2,
+        "session_status": "COMPLETE",
         "parameters_json": json.dumps(params),
         "reps": reps,
         "target_reps": params["target_reps"],
         "off_plane_reps": off_plane,
         "max_angle": peak,
+        "peak_rom": peak,
         "trajectory_similarity": similarity,
         "frames_total": frames,
         "frames_measured": measured,
@@ -128,17 +145,26 @@ def test_repeated_progression_stops_at_upper_bounds():
 # ---------------------------------------------------------
 
 def test_insufficient_rom_never_progresses():
-    out = run([attempt(1), attempt(2), attempt(3, peak=75.0)])
+    out = run([attempt(1), attempt(2), attempt(3, reps=0, peak=75.0)])
     assert out.action == REPEAT and no_increase(out)
     assert "reach the target range" in out.feedback
 
 
-def test_poor_rom_in_recent_attempts_simplifies():
-    out = run([attempt(1, reps=2, peak=40.0), attempt(2, reps=2, peak=40.0)])
+def test_poor_rom_in_recent_attempts_simplifies_the_range():
+    # Below the range target the counter credits no repetitions.
+    out = run([attempt(1, reps=0, peak=40.0), attempt(2, reps=0, peak=40.0)])
+    assert out.action == SIMPLIFY
+    assert out.proposed_parameters == {"target_reps": 10,
+                                       "target_range": 75.0}
+    assert out.next_attempt_parameters == PARAMS
+    assert no_increase(out)
+
+
+def test_few_repetitions_at_full_range_simplifies_the_repetitions():
+    out = run([attempt(1, reps=2, peak=95.0), attempt(2, reps=3, peak=92.0)])
     assert out.action == SIMPLIFY
     assert out.proposed_parameters == {"target_reps": 8,
                                        "target_range": 80.0}
-    assert out.next_attempt_parameters == PARAMS
     assert no_increase(out)
 
 
@@ -206,7 +232,7 @@ def test_missing_dtw_blocks_progression_without_inventing_a_score():
 
 
 def test_missing_rom_blocks_progression():
-    out = run([attempt(1), attempt(2), attempt(3, peak=None)])
+    out = run([attempt(1), attempt(2), attempt(3, reps=0, peak=None)])
     assert out.action == REPEAT and no_increase(out)
     assert "could not be measured" in out.feedback
 
@@ -237,7 +263,7 @@ def test_lower_bounds_are_respected():
     out = run([attempt(1, reps=0, peak=20.0, params=bottom),
                attempt(2, reps=0, peak=20.0, params=bottom)], bottom)
     assert out.action == REPEAT and not out.requires_approval
-    assert "lower bounds" in out.reason
+    assert "lower bound" in out.reason
 
 
 @pytest.mark.parametrize("proposed, action, message", [
@@ -295,8 +321,8 @@ COMPENSATION_VARIANTS = [
 
 @pytest.mark.parametrize("history", [
     [attempt(1), attempt(2)],                                   # progress
-    [attempt(1), attempt(2), attempt(3, peak=70.0)],            # repeat
-    [attempt(1, reps=2, peak=40.0), attempt(2, reps=2, peak=40.0)],
+    [attempt(1), attempt(2), attempt(3, reps=0, peak=70.0)],    # repeat
+    [attempt(1, reps=0, peak=40.0), attempt(2, reps=0, peak=40.0)],
 ])
 def test_compensation_output_cannot_change_the_decision(history):
     outputs = [run(history, compensation=c) for c in COMPENSATION_VARIANTS]

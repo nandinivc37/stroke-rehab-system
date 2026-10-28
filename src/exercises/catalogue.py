@@ -22,6 +22,7 @@ from src.exercises.angles import (
 )
 from src.exercises.config import (
     AdaptiveParameter,
+    DtwConfig,
     ExerciseConfig,
     PlaneCheckConfig,
     RepCountingConfig,
@@ -56,6 +57,29 @@ def _upper_arm_and_shoulders(side):
     ))
 
 
+# Metrics v2 measurement settings shared by every catalogue exercise
+# (see RepCountingConfig / DtwConfig). Engineering defaults, not
+# clinically validated.
+REP_MIN_DWELL_S = 0.13
+REP_MAX_GAP_S = 1.0
+METRICS_V2_DTW = DtwConfig(normalization="path")
+# Glitch filter: generous upper bounds on how fast the measured value
+# can change between consecutive measured frames. Chosen well above
+# voluntary rehabilitation movement speeds so that only tracking
+# artefacts (e.g. left/right landmark swaps) are rejected.
+MAX_ANGULAR_SPEED = 1000.0  # degrees per second
+MAX_REACH_SPEED = 500.0     # % of arm length per second
+
+
+def _rep_config(up_threshold, down_threshold):
+    return RepCountingConfig(
+        up_threshold=up_threshold,
+        down_threshold=down_threshold,
+        min_dwell_s=REP_MIN_DWELL_S,
+        max_gap_s=REP_MAX_GAP_S,
+    )
+
+
 def _target_reps(default=10):
     return AdaptiveParameter(
         name="target_reps", label="Target repetitions", unit="reps",
@@ -88,7 +112,10 @@ SHOULDER_FLEXION = ExerciseConfig(
     required_landmarks=_upper_arm_and_shoulders,
     angle_fn=world_humeral_elevation,
     reference_fn=_flexion_reference,
-    rep=RepCountingConfig(up_threshold=80.0, down_threshold=30.0),
+    rep=_rep_config(80.0, 30.0),
+    dtw=METRICS_V2_DTW,
+    metrics_version=2,
+    max_speed=MAX_ANGULAR_SPEED,
     segmentation=SegmentationConfig(
         start_threshold=25.0, end_threshold=20.0, end_frames=5,
         min_segment_frames=6, min_range=12.0, min_active_frames=5,
@@ -140,7 +167,10 @@ SHOULDER_ABDUCTION = ExerciseConfig(
     required_landmarks=_upper_arm_and_shoulders,
     angle_fn=world_humeral_elevation,
     reference_fn=_abduction_reference,
-    rep=RepCountingConfig(up_threshold=80.0, down_threshold=30.0),
+    rep=_rep_config(80.0, 30.0),
+    dtw=METRICS_V2_DTW,
+    metrics_version=2,
+    max_speed=MAX_ANGULAR_SPEED,
     segmentation=SegmentationConfig(
         start_threshold=25.0, end_threshold=20.0, end_frames=5,
         min_segment_frames=6, min_range=12.0, min_active_frames=5,
@@ -192,7 +222,10 @@ ELBOW_FLEXION = ExerciseConfig(
     required_landmarks=lambda side: arm_landmarks(side),
     angle_fn=world_elbow_flexion,
     reference_fn=_elbow_reference,
-    rep=RepCountingConfig(up_threshold=90.0, down_threshold=30.0),
+    rep=_rep_config(90.0, 30.0),
+    dtw=METRICS_V2_DTW,
+    metrics_version=2,
+    max_speed=MAX_ANGULAR_SPEED,
     segmentation=SegmentationConfig(
         start_threshold=25.0, end_threshold=20.0, end_frames=5,
         min_segment_frames=6, min_range=12.0, min_active_frames=5,
@@ -250,7 +283,10 @@ FORWARD_REACH = ExerciseConfig(
     required_landmarks=_arm_and_shoulders,
     angle_fn=world_forward_reach,
     reference_fn=_reach_reference,
-    rep=RepCountingConfig(up_threshold=60.0, down_threshold=20.0),
+    rep=_rep_config(60.0, 20.0),
+    dtw=METRICS_V2_DTW,
+    metrics_version=2,
+    max_speed=MAX_REACH_SPEED,
     segmentation=SegmentationConfig(
         start_threshold=15.0, end_threshold=10.0, end_frames=5,
         min_segment_frames=6, min_range=10.0, min_active_frames=5,

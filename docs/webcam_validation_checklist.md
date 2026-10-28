@@ -12,8 +12,10 @@ not something to tune away silently.
 
 | # | Check | Result |
 |---|---|---|
-| 0.1 | `venv/bin/python -m pytest` passes on the test machine | |
-| 0.2 | App starts with `venv/bin/python -m src.ui.app`; camera opens from the Rehabilitation page | |
+| 0.1 | `python -m pytest` passes on the test machine (Windows: `.venv\Scripts\python -m pytest`) | |
+| 0.2 | App starts with `python -m src.ui.app` (or `run.bat`); camera opens from the Rehabilitation page; the window stays responsive while the camera runs | |
+| 0.6 | Record `REHAB_POSE_COMPLEXITY` (default 1), power source and power plan | |
+| 0.7 | Close the whole application during a session: on restart, the session is listed with status "interrupted app closed" | |
 | 0.3 | Camera upright, ~shoulder height, 2–2.5 m, whole trunk incl. hips visible | |
 | 0.4 | Live view is mirrored; overlay text reads normally (not mirrored) | |
 | 0.5 | Unplug the camera mid-session: a clear message appears, the app does not crash | |
@@ -22,7 +24,7 @@ not something to tune away silently.
 
 | # | Check | Result |
 |---|---|---|
-| 1.1 | Session `mean_fps` (Progress → session detail / DB) — record value. Policy needs ≥ 10 fps; if lower, adaptation will never change parameters | |
+| 1.1 | Session `mean_fps` (Progress table "FPS") — record value. Policy needs ≥ 10 fps; if lower, adaptation will never change parameters. Per-stage timing (read / inference / analysis) is in `sessions.diagnostics_json` | |
 | 1.2 | Arm-tracked % ≥ 80% for a normal seated session | |
 | 1.3 | Hips hidden (e.g. behind a table): shoulder angles still measured (camera-vertical fallback); note how often | |
 | 1.4 | Walking out of frame: reps do not change, "Pose not detected" shown | |
@@ -64,6 +66,10 @@ where possible:
 | 4.4 | Approve with a reviewer name → next session shows and records the new targets | |
 | 4.5 | Reject → targets unchanged; rejected proposal cannot later be approved | |
 | 4.6 | Low-fps or poorly tracked session → excluded, reason visible in the decision log | |
+
+Quantitative agreement (angles vs goniometer, repetition counts, plane
+classification, movement-score discrimination) is measured with
+[`validation_protocol.md`](validation_protocol.md).
 
 ## 5. Not covered by this checklist
 

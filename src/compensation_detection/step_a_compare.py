@@ -35,7 +35,10 @@ import hashlib
 import inspect
 import json
 import os
-import resource
+try:
+    import resource  # POSIX only: peak-memory logging
+except ImportError:  # Windows
+    resource = None
 import tempfile
 import time
 from datetime import datetime
@@ -367,6 +370,10 @@ def model_fingerprint(model, X, y, groups, max_epochs):
 
 
 def _fsync_dir(directory):
+    # Windows cannot open a directory as a file; os.replace is atomic on
+    # NTFS and there is no separate directory-entry flush to request.
+    if os.name == "nt":
+        return
     fd = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(fd)
@@ -553,8 +560,9 @@ def run_lopo(model, X, y, groups, device, run_dir, fingerprint, max_epochs,
             meta = dict(info, seconds=round(time.time() - started, 1),
                         device=(torch.cuda.get_device_name(device)
                                 if device.type == "cuda" else "cpu"),
-                        peak_rss_mb=round(resource.getrusage(
-                            resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+                        peak_rss_mb=(round(resource.getrusage(
+                            resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+                            if resource is not None else None),
                         finished=datetime.now().isoformat(timespec="seconds"))
             if device.type == "cuda" and model == "bilstm":
                 meta["peak_vram_allocated_mb"] = round(

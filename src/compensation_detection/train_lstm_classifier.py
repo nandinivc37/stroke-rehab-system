@@ -18,7 +18,10 @@ from torch.utils.data import DataLoader, TensorDataset
 # ============================================================
 
 DATA_PATH = Path("data/processed_toronto/compensation_temporal_windows.npz")
-OUTPUT_DIR = Path("outputs/compensation_model_lstm")
+# v2: model selection on validation participants only (see below). A new
+# directory, so the original checkpoint in outputs/compensation_model_lstm
+# (selected on its test participants) is never overwritten.
+OUTPUT_DIR = Path("outputs/compensation_model_lstm_v2")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 RANDOM_SEED = 42
@@ -31,6 +34,29 @@ TRAIN_PARTICIPANTS = {
 TEST_PARTICIPANTS = {
     "H01", "H02", "H06", "P02",
 }
+
+# Model selection (best epoch, learning-rate schedule, early stopping)
+# uses these TRAINING participants, held out from fitting. The test
+# participants are evaluated exactly once, after training. The original
+# version of this script selected epochs on the test participants, so
+# its reported test metrics (outputs/compensation_model_lstm) are
+# optimistically biased. One healthy participant and one patient with
+# compensation labels (P05: classes 1, 3, 4).
+VALIDATION_PARTICIPANTS = {"H05", "P05"}
+FIT_PARTICIPANTS = TRAIN_PARTICIPANTS - VALIDATION_PARTICIPANTS
+
+# Per-frame feature order of the windows (build_temporal_windows.py).
+# Saved with the checkpoint so inference can verify its input schema.
+from src.compensation_detection.build_temporal_windows import (  # noqa: E402
+    FEATURE_COLUMNS,
+)
+
+CLASS_NAMES = [
+    "No Compensation",
+    "Shoulder Elevation",
+    "Trunk Rotation",
+    "Lean Forward",
+]
 
 NUM_CLASSES = 4
 INPUT_SIZE = 21
@@ -102,21 +128,29 @@ all_participants = set(participants)
 assert TRAIN_PARTICIPANTS.isdisjoint(TEST_PARTICIPANTS)
 assert TRAIN_PARTICIPANTS | TEST_PARTICIPANTS == all_participants
 
-train_mask = np.isin(participants, list(TRAIN_PARTICIPANTS))
+assert VALIDATION_PARTICIPANTS <= TRAIN_PARTICIPANTS
+
+train_mask = np.isin(participants, list(FIT_PARTICIPANTS))
+val_mask = np.isin(participants, list(VALIDATION_PARTICIPANTS))
 test_mask = np.isin(participants, list(TEST_PARTICIPANTS))
 
 X_train = X[train_mask]
 y_train = y[train_mask]
 
+X_val = X[val_mask]
+y_val = y[val_mask]
+
 X_test = X[test_mask]
 y_test = y[test_mask]
 
 print("Participant-wise split:")
-print(f"  Train participants: {sorted(TRAIN_PARTICIPANTS)}")
-print(f"  Test participants:  {sorted(TEST_PARTICIPANTS)}")
+print(f"  Fit participants:        {sorted(FIT_PARTICIPANTS)}")
+print(f"  Validation participants: {sorted(VALIDATION_PARTICIPANTS)}")
+print(f"  Test participants:       {sorted(TEST_PARTICIPANTS)}")
 print()
-print(f"  Train windows: {len(X_train):,}")
-print(f"  Test windows:  {len(X_test):,}")
+print(f"  Fit windows:        {len(X_train):,}")
+print(f"  Validation windows: {len(X_val):,}")
+print(f"  Test windows:       {len(X_test):,}")
 print()
 
 
@@ -125,6 +159,7 @@ print()
 # ============================================================
 
 y_train_zero = y_train - 1
+y_val_zero = y_val - 1
 y_test_zero = y_test - 1
 
 
@@ -158,6 +193,9 @@ print()
 X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
 y_train_tensor = torch.tensor(y_train_zero, dtype=torch.long)
 
+X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
+y_val_tensor = torch.tensor(y_val_zero, dtype=torch.long)
+
 X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
 y_test_tensor = torch.tensor(y_test_zero, dtype=torch.long)
 
@@ -181,6 +219,14 @@ train_loader = DataLoader(
 
 test_loader = DataLoader(
     test_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=0,
+    pin_memory=torch.cuda.is_available(),
+)
+
+val_loader = DataLoader(
+    TensorDataset(X_val_tensor, y_val_tensor),
     batch_size=BATCH_SIZE,
     shuffle=False,
     num_workers=0,
@@ -277,7 +323,7 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 # Evaluation
 # ============================================================
 
-def evaluate():
+def evaluate(loader):
 
     model.eval()
 
@@ -289,7 +335,7 @@ def evaluate():
 
     with torch.no_grad():
 
-        for batch_x, batch_y in test_loader:
+        for batch_x, batch_y in loader:
 
             batch_x = batch_x.to(
                 device,
@@ -426,6 +472,7 @@ for epoch in range(1, MAX_EPOCHS + 1):
         total_train_samples
     )
 
+    # Model selection on VALIDATION participants only.
     (
         test_loss,
         accuracy,
@@ -433,7 +480,7 @@ for epoch in range(1, MAX_EPOCHS + 1):
         weighted_f1,
         _,
         _,
-    ) = evaluate()
+    ) = evaluate(val_loader)
 
     scheduler.step(macro_f1)
 
@@ -452,7 +499,7 @@ for epoch in range(1, MAX_EPOCHS + 1):
     print(
         f"Epoch {epoch:02d}/{MAX_EPOCHS} | "
         f"Train Loss: {train_loss:.4f} | "
-        f"Test Loss: {test_loss:.4f} | "
+        f"Val Loss: {test_loss:.4f} | "
         f"Accuracy: {accuracy:.4f} | "
         f"Macro F1: {macro_f1:.4f} | "
         f"Weighted F1: {weighted_f1:.4f} | "
@@ -475,6 +522,17 @@ for epoch in range(1, MAX_EPOCHS + 1):
                 "num_classes": NUM_CLASSES,
                 "best_macro_f1": best_macro_f1,
                 "best_epoch": best_epoch,
+                "selection": "validation participants",
+                "validation_participants": sorted(VALIDATION_PARTICIPANTS),
+                "test_participants": sorted(TEST_PARTICIPANTS),
+                "window_frames": 20,
+                "feature_names": list(FEATURE_COLUMNS),
+                "feature_scaling": None,
+                "class_names": CLASS_NAMES,
+                "label_mapping": "stored class index = Toronto label - 1",
+                "coordinate_source": "Toronto Kinect v2 skeletons "
+                "(pre-normalised; Savitzky-Golay smoothed). NOT "
+                "compatible with MediaPipe features.",
             },
             best_model_path,
         )
@@ -507,7 +565,7 @@ model.load_state_dict(
 
 
 # ============================================================
-# Final evaluation
+# Final evaluation: the ONLY use of the test participants
 # ============================================================
 
 (
@@ -517,7 +575,13 @@ model.load_state_dict(
     weighted_f1,
     targets,
     predictions,
-) = evaluate()
+) = evaluate(test_loader)
+
+majority_accuracy = float(np.mean(targets == 0))
+majority_macro_f1 = float(f1_score(
+    targets, np.zeros_like(targets), average="macro",
+    labels=[0, 1, 2, 3], zero_division=0,
+))
 
 report = classification_report(
     targets,
@@ -553,7 +617,10 @@ metrics = {
     "batch_size": BATCH_SIZE,
     "max_epochs": MAX_EPOCHS,
     "best_epoch": int(best_epoch),
-    "best_macro_f1": float(best_macro_f1),
+    "best_validation_macro_f1": float(best_macro_f1),
+    "selection": "validation participants",
+    "majority_baseline_test_accuracy": majority_accuracy,
+    "majority_baseline_test_macro_f1": majority_macro_f1,
     "final_accuracy": float(accuracy),
     "final_macro_f1": float(macro_f1),
     "final_weighted_f1": float(weighted_f1),
@@ -566,9 +633,11 @@ metrics = {
     ),
     "torch_version": torch.__version__,
     "torch_cuda": torch.version.cuda,
-    "train_windows": int(len(X_train)),
+    "fit_windows": int(len(X_train)),
+    "validation_windows": int(len(X_val)),
     "test_windows": int(len(X_test)),
-    "train_participants": sorted(TRAIN_PARTICIPANTS),
+    "fit_participants": sorted(FIT_PARTICIPANTS),
+    "validation_participants": sorted(VALIDATION_PARTICIPANTS),
     "test_participants": sorted(TEST_PARTICIPANTS),
 }
 

@@ -86,8 +86,14 @@ def test_other_patients_are_unaffected(temp_db):
 
 def recommend_for(patient_id, impairment="Reduced strength"):
     _, side, region, joint, _ = db.get_affected_areas(patient_id)[0]
+    # Baseline ROM within every exercise's supported targets: these
+    # tests are about the affected area, not the baseline-ROM rule
+    # (tests/test_recommendation_rules.py).
     return recommend_exercise("Stroke", side, region, joint, impairment,
-                              40.0, "No major restriction")
+                              BASELINE_ROM, "No major restriction")
+
+
+BASELINE_ROM = 100.0
 
 
 def test_legacy_arm_elbow_now_gets_elbow_flexion(temp_db):
@@ -126,7 +132,7 @@ def test_assessment_page_recommends_for_legacy_patient(qapp, temp_db):
     assert "Upper Limb" in page.area_label.text()
     page.diagnosis_input.setCurrentText("Stroke")
     page.impairment_input.setCurrentText("Reduced strength")
-    page.rom_input.setValue(40.0)
+    page.rom_input.setValue(BASELINE_ROM)
     page.restrictions_input.setCurrentText("No major restriction")
 
     page.save_assessment()
@@ -146,7 +152,7 @@ def test_history_is_preserved(qapp, temp_db, scripted_camera):
 
     patient_id = legacy_patient("Arm", "Shoulder")
     assessment_id = db.save_clinical_assessment(
-        patient_id, "Stroke", "Reduced strength", 40, "None", "")
+        patient_id, "Stroke", "Reduced strength", BASELINE_ROM, "None", "")
     prescribe(patient_id, assessment_id, "Shoulder Abduction",
               "shoulder_abduction", "LEFT", {"target_reps": 3})
     page = RehabPage()

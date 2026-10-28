@@ -51,10 +51,12 @@ def test_missing_values_render_as_dash_not_zero():
     cells = table_row(v1_row())
     assert cells[2] == "5 / 10"
     assert cells[3] == MISSING          # peak
-    assert cells[4] == MISSING          # similarity
-    assert cells[5] == "0"              # zero scored attempts is real
-    assert cells[6] == "0%"             # arm tracked in 0% of frames
-    assert cells[7] == MISSING          # fps unknown
+    assert cells[4] == MISSING          # movement score
+    assert cells[5] == MISSING          # DTW shape similarity
+    assert cells[6] == "0"              # zero scored movements is real
+    assert cells[7] == "0%"             # arm tracked in 0% of frames
+    assert cells[8] == MISSING          # fps unknown
+    assert cells[9] == MISSING          # status not recorded (pre-v2)
 
 
 def test_legacy_and_current_sessions_are_grouped_separately():

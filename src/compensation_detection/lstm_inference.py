@@ -13,6 +13,14 @@ CLASS_NAMES = {
 }
 
 
+# Feature source of the original checkpoint.
+TRAINING_SOURCE = "toronto_kinect"
+
+
+class IncompatibleFeatures(ValueError):
+    pass
+
+
 class BiLSTMClassifier(nn.Module):
 
     def __init__(
@@ -84,6 +92,30 @@ class CompensationLSTM:
         self.model.to(self.device)
 
         self.model.eval()
+
+        # Input schema recorded with the checkpoint (absent in checkpoints
+        # written before train_lstm_classifier v2).
+        self.feature_names = checkpoint.get("feature_names")
+        self.selection = checkpoint.get("selection", "unknown")
+        self.coordinate_source = checkpoint.get(
+            "coordinate_source", TRAINING_SOURCE)
+
+    def check_input_schema(self, feature_names, source):
+        """
+        Raise IncompatibleFeatures unless the features come from the
+        same source as the training data and (when the checkpoint
+        records them) have the same names in the same order. Matching
+        dimensions alone do not make features compatible.
+        """
+        if source != TRAINING_SOURCE:
+            raise IncompatibleFeatures(
+                f"model trained on {TRAINING_SOURCE} features; got {source}. "
+                "Kinect and MediaPipe features differ in axes, joints, "
+                "normalisation and smoothing (README, compensation status)."
+            )
+        if self.feature_names is not None and list(feature_names) != list(
+                self.feature_names):
+            raise IncompatibleFeatures("feature names/order differ")
 
     def predict(self, window):
 

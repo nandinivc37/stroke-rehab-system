@@ -18,9 +18,24 @@ FLEXION = get_exercise_config("shoulder_flexion")
 PARAMS = {"target_reps": 10, "target_range": 80.0}
 
 
+def check_realistic(reps, off_plane, peak, params):
+    """
+    The repetition counter only counts once the angle reaches the range
+    target (rep threshold = target_range), so a session with counted
+    repetitions always has a peak at or above it. Fixtures that violate
+    this test states the real pipeline cannot produce.
+    """
+    if (reps or off_plane) and (peak is None or peak < params["target_range"]):
+        raise ValueError(
+            f"unrealistic fixture: {reps} reps with peak {peak} below the "
+            f"range target {params['target_range']}"
+        )
+
+
 def session(sid, reps=10, peak=95.0, similarity=85.0, params=None,
-            target_reps=10, off_plane=0, version=1, frames=300,
-            measured=300, errors=0, fps=25.0):
+            target_reps=10, off_plane=0, version=2, frames=300,
+            measured=300, errors=0, fps=25.0, status="COMPLETE"):
+    check_realistic(reps, off_plane, peak, params or PARAMS)
     return {
         "session_id": sid,
         "session_date": f"2026-10-{sid:02d} 10:00:00",
@@ -30,6 +45,8 @@ def session(sid, reps=10, peak=95.0, similarity=85.0, params=None,
         "target_reps": target_reps,
         "off_plane_reps": off_plane,
         "max_angle": peak,
+        "peak_rom": peak,
+        "session_status": status,
         "trajectory_similarity": similarity,
         "frames_total": frames,
         "frames_measured": measured,
@@ -102,10 +119,40 @@ def test_two_low_completion_sessions_decrease_reps():
 
 
 def test_low_range_decreases_range_target():
-    result = decide([session(1, reps=7, peak=60), session(2, reps=7, peak=62)])
+    # Realistic: below the range target no repetition can be counted.
+    result = decide([session(1, reps=0, peak=60), session(2, reps=0, peak=62)])
     assert result.decision == DECREASE
     assert result.changed_parameter == "target_range"
     assert result.proposed_parameters["target_range"] == 75.0
+    assert result.proposed_parameters["target_reps"] == 10
+
+
+@pytest.mark.parametrize("peaks", [(70.0, 72.0), (78.0, 79.5)])
+def test_range_limited_patient_gets_range_not_reps_reduced(peaks):
+    """
+    Regression (audit P0-3): conservative_v1 lowered the REPETITION
+    target for a patient whose peak stayed just below the range target,
+    because 0 counted repetitions looked like low completion.
+    """
+    result = decide([session(1, reps=0, peak=peaks[0]),
+                     session(2, reps=0, peak=peaks[1])])
+    assert result.decision == DECREASE
+    assert result.changed_parameter == "target_range"
+    assert result.proposed_parameters == {"target_reps": 10,
+                                          "target_range": 75.0}
+    assert "no repetition could be counted" in result.rationale_text()
+
+
+def test_no_measured_movement_is_not_evidence_for_a_decrease():
+    result = decide([session(1, reps=0, peak=None),
+                     session(2, reps=0, peak=None)])
+    assert result.decision == MAINTAIN
+    assert not result.changes_parameters
+
+
+def test_unrealistic_fixture_is_rejected():
+    with pytest.raises(ValueError):
+        session(1, reps=7, peak=60)
 
 
 def test_conflicting_sessions_maintain():
@@ -167,7 +214,8 @@ def test_lower_bounds_respected():
                      session(2, reps=0, target_reps=3, peak=20, params=bottom)],
                     params=bottom)
     assert result.decision == MAINTAIN
-    assert "lower bounds" in result.rationale_text()
+    assert "lower bound" in result.rationale_text()
+    assert not result.changes_parameters
 
 
 def test_unvalidated_signals_are_recorded_as_not_used():

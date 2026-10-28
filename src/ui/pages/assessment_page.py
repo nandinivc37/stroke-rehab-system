@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QComboBox,
     QDoubleSpinBox,
+    QSpinBox,
     QTextEdit,
     QPushButton,
     QMessageBox,
@@ -25,7 +26,9 @@ from src.database.db import (
 
 from src.assessment.recommendation import (
     DIAGNOSIS_OPTIONS,
+    override_note,
     recommend_exercise,
+    starting_parameters,
 )
 from src.exercises.catalogue import get_exercise_config, implemented_exercises
 
@@ -37,6 +40,12 @@ class AssessmentPage(QWidget):
 
         self.current_recommendation_id = None
         self.current_affected_side = None
+        # The rule-based suggestion being reviewed and the assessment
+        # inputs it came from (used to recompute starting parameters
+        # when the therapist picks another exercise).
+        self.current_suggestion = None
+        self.current_assessment_inputs = {}
+        self.parameter_inputs = {}
 
         # =================================================
         # Page styling
@@ -352,6 +361,15 @@ class AssessmentPage(QWidget):
 
         recommendation_layout.addLayout(choice_row)
 
+        self.exercise_choice.currentIndexChanged.connect(
+            self._exercise_choice_changed
+        )
+
+        # Starting parameters: suggested by the rules, editable by the
+        # therapist within the catalogue bounds before approval.
+        self.parameter_form = QFormLayout()
+        recommendation_layout.addLayout(self.parameter_form)
+
         # -------------------------------------------------
         # Reason
         # -------------------------------------------------
@@ -652,6 +670,11 @@ class AssessmentPage(QWidget):
                 recommendation_id
             )
             self.current_affected_side = affected_side
+            self.current_suggestion = recommendation
+            self.current_assessment_inputs = {
+                "baseline_rom": baseline_rom,
+                "restrictions": restrictions,
+            }
 
             choice = self.exercise_choice.findData(
                 recommendation["exercise_id"]
@@ -659,6 +682,10 @@ class AssessmentPage(QWidget):
             if choice >= 0:
                 self.exercise_choice.setCurrentIndex(choice)
             self.exercise_choice.setEnabled(True)
+            self._set_parameter_inputs(
+                get_exercise_config(recommendation["exercise_id"]),
+                recommendation["parameters"],
+            )
 
             # ---------------------------------------------
             # Display recommendation
@@ -712,17 +739,33 @@ class AssessmentPage(QWidget):
         if config is None:
             return
 
+        parameters = self.approved_parameters(config)
+        reason = None
+        difficulty = None
+        if self.current_suggestion is not None:
+            note = override_note(
+                self.current_suggestion["exercise"],
+                self.current_suggestion["parameters"],
+                config,
+                parameters,
+            )
+            if note:
+                reason = self.current_suggestion["reason"] + " " + note
+                difficulty = "Therapist-set start"
+
         try:
 
-            # Record the exercise actually prescribed, with the
-            # catalogue's default parameters as the starting point.
+            # Record the exercise and starting parameters actually
+            # prescribed (the therapist's, not only the suggestion).
             set_recommendation_prescription(
                 self.current_recommendation_id,
                 exercise=config.display_name,
                 exercise_id=config.exercise_id,
                 affected_side=self.current_affected_side,
-                parameters=config.default_parameters(),
+                parameters=parameters,
                 source="ASSESSMENT",
+                reason=reason,
+                difficulty=difficulty,
             )
 
             update_recommendation_status(
@@ -732,6 +775,8 @@ class AssessmentPage(QWidget):
 
             self.exercise_label.setText(config.display_name)
             self.exercise_choice.setEnabled(False)
+            for widget in self.parameter_inputs.values():
+                widget.setEnabled(False)
 
             self.reason_label.setText(
                 "✓ Therapist approved this exercise. "
@@ -755,6 +800,61 @@ class AssessmentPage(QWidget):
                 "Error",
                 f"Could not approve recommendation:\n\n{error}"
             )
+
+    # =====================================================
+    # Starting parameters
+    # =====================================================
+
+    def _set_parameter_inputs(self, config, parameters):
+        """One bounded editor per adaptive parameter of `config`."""
+
+        while self.parameter_form.rowCount():
+            self.parameter_form.removeRow(0)
+        self.parameter_inputs = {}
+
+        if config is None:
+            return
+
+        values = config.resolve_parameters(parameters)
+        for p in config.adaptive_parameters:
+            widget = QSpinBox() if p.integer else QDoubleSpinBox()
+            if p.integer:
+                widget.setRange(int(p.minimum), int(p.maximum))
+                widget.setSingleStep(int(p.step))
+                widget.setValue(int(values[p.name]))
+            else:
+                widget.setDecimals(1)
+                widget.setRange(p.minimum, p.maximum)
+                widget.setSingleStep(p.step)
+                widget.setValue(values[p.name])
+            unit = f" ({p.unit})" if p.unit else ""
+            widget.setToolTip(
+                f"Allowed {p.minimum:g}-{p.maximum:g}{unit}, step {p.step:g}"
+            )
+            self.parameter_form.addRow(f"{p.label}{unit}:", widget)
+            self.parameter_inputs[p.name] = widget
+
+    def _exercise_choice_changed(self):
+        if self.current_recommendation_id is None:
+            return
+        config = get_exercise_config(self.exercise_choice.currentData())
+        if config is None:
+            return
+        parameters, _, _ = starting_parameters(
+            config,
+            self.current_assessment_inputs.get("baseline_rom"),
+            self.current_assessment_inputs.get("restrictions"),
+        )
+        self._set_parameter_inputs(config, parameters)
+
+    def approved_parameters(self, config):
+        """Parameters in the editors, clamped to the catalogue bounds."""
+        names = {p.name for p in config.adaptive_parameters}
+        return config.resolve_parameters({
+            name: widget.value()
+            for name, widget in self.parameter_inputs.items()
+            if name in names
+        })
 
     # =====================================================
     # Reject recommendation
@@ -795,7 +895,9 @@ class AssessmentPage(QWidget):
     def clear_recommendation(self):
 
         self.current_recommendation_id = None
+        self.current_suggestion = None
         self.exercise_choice.setEnabled(False)
+        self._set_parameter_inputs(None, None)
 
         self.exercise_label.setText(
             "No recommendation generated."

@@ -19,7 +19,7 @@ Pipeline:
     2. attempt check    - repetitions, range of motion (ROM) and movement
                           quality (DTW similarity, movement plane) of
                           THIS attempt against the active targets
-    3. session policy   - policy.evaluate (conservative_v1) over the
+    3. session policy   - policy.evaluate (conservative_v2) over the
                           recent valid sessions decides any change
     4. combination      - progression only if the policy proposes it AND
                           this attempt met every target
@@ -194,7 +194,9 @@ def check_attempt(exercise, current, attempt, policy):
     target_range = float(current["target_range"])
     reps = int(attempt.get("reps") or 0)
     off_plane = int(attempt.get("off_plane_reps") or 0)
-    peak = attempt.get("max_angle")
+    # Peak ROM over in-plane movements (metrics v2), not the raw
+    # session maximum, which includes setup and off-plane movement.
+    peak = attempt.get("peak_rom")
     similarity = attempt.get("trajectory_similarity")
     attempts = reps + off_plane
     off_plane_fraction = off_plane / attempts if attempts else None
@@ -241,12 +243,12 @@ def _performance_text(exercise, check):
             f"(target {_value(check.target_range, unit)})."
         )
     if check.similarity is None:
-        parts.append("Movement similarity: not available (no complete "
-                     "movement was detected).")
+        parts.append("Movement score: not available (no complete "
+                     "movement in the prescribed direction was detected).")
     else:
         parts.append(
-            f"Movement similarity to the reference: "
-            f"{check.similarity:.0f}/100."
+            f"Movement score (shape compared with the reference, and "
+            f"range reached): {check.similarity:.0f}/100."
         )
     return " ".join(parts)
 

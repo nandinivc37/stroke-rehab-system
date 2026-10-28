@@ -1,3 +1,5 @@
+import logging
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame,
@@ -179,6 +181,16 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------
     # Page navigation
     # ---------------------------------------------
+
+    def closeEvent(self, event):
+        """Do not lose a running session when the window is closed."""
+        try:
+            self.rehab_page.save_interrupted_session()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not save the interrupted session"
+            )
+        super().closeEvent(event)
 
     def refresh_patient_lists(self):
         """Reload pages after a registration, without an app restart.

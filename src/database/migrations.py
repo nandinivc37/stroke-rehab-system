@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SESSION_COLUMNS = [
     # What was performed, and with which prescription/configuration.
@@ -56,6 +56,22 @@ SESSION_COLUMNS = [
     ("comp_shoulder_elevation", "INTEGER"),
     ("comp_trunk_rotation", "INTEGER"),
     ("comp_lean_forward", "INTEGER"),
+    # --- Schema 2 (metrics v2) ---
+    # Peak ROM from in-plane movements (3-frame median); NULL when no
+    # such movement was measured. max_angle keeps the raw session max.
+    ("peak_rom", "REAL"),
+    # Mean DTW similarity (0-100) and mean matched-sample error (deg)
+    # of the scored segments, reported separately from the movement
+    # score stored in trajectory_similarity.
+    ("dtw_similarity", "REAL"),
+    ("dtw_mean_error_deg", "REAL"),
+    # COMPLETE, ANALYSIS_HALTED, CAMERA_LOST, INTERRUPTED_APP_CLOSED.
+    # NULL on sessions recorded before schema 2.
+    ("session_status", "TEXT"),
+    ("interrupted_reps", "INTEGER"),
+    # Pipeline configuration (pose model, threading, frame size) and
+    # per-stage timing (JSON).
+    ("diagnostics_json", "TEXT"),
 ]
 
 RECOMMENDATION_COLUMNS = [
@@ -87,6 +103,24 @@ CREATE TABLE IF NOT EXISTS adaptation_decisions(
     proposed_recommendation_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(patient_id) REFERENCES patients(patient_id),
+    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+)
+"""
+
+
+# Per-frame diagnostics for investigating measurement errors. Landmark
+# numbers only: no images or video are stored.
+SESSION_FRAMES_TABLE = """
+CREATE TABLE IF NOT EXISTS session_frames(
+    session_id INTEGER NOT NULL,
+    frame_index INTEGER NOT NULL,
+    t_s REAL,
+    status TEXT NOT NULL,
+    angle REAL,
+    plane REAL,
+    min_visibility REAL,
+    reference_frame TEXT,
+    PRIMARY KEY(session_id, frame_index),
     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
 )
 """
@@ -221,6 +255,10 @@ def migrate(conn):
         conn.execute(ADAPTATION_TABLE)
         changes["adaptation_decisions"] = [] if had_table else ["<created>"]
 
+        had_frames = bool(existing_columns(conn, "session_frames"))
+        conn.execute(SESSION_FRAMES_TABLE)
+        changes["session_frames"] = [] if had_frames else ["<created>"]
+
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.execute("COMMIT")
     except Exception:
@@ -242,6 +280,7 @@ def ensure_schema(db_path, backup_dir):
     """
 
     db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = connect_for_migration(db_path)
     try:
@@ -278,6 +317,7 @@ def main():
     parser.add_argument("--backup-dir", type=Path, default=DB_BACKUP_DIR)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
+    args.db.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(args.db)
     version = schema_version(conn)

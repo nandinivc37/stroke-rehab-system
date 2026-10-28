@@ -1,5 +1,6 @@
 # Virtual environment
 venv/
+.venv/
 
 # Python cache
 __pycache__/
@@ -12,4 +13,7 @@ data/
 
 # VS Code
 .vscode/
+
+# Logs
+*.log
 

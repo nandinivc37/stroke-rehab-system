@@ -186,6 +186,7 @@ def test_migration_on_copy_of_real_database(tmp_path):
 
     conn = sqlite3.connect(copy)
     already = m.schema_version(conn) >= m.SCHEMA_VERSION
+    columns_before = m.existing_columns(conn, "sessions")
     conn.close()
 
     before = snapshot(copy, "sessions", ORIGINAL_SESSION_COLUMNS)
@@ -199,8 +200,16 @@ def test_migration_on_copy_of_real_database(tmp_path):
         assert counts_after[table] == count
 
     if not already:
-        new_columns = ", ".join(c for c, _ in m.SESSION_COLUMNS)
-        for row in snapshot(copy, "sessions", new_columns):
+        # Columns added by THIS migration hold NULL for existing rows:
+        # nothing is backfilled or estimated.
+        added = [c for c, _ in m.SESSION_COLUMNS if c not in columns_before]
+        assert added
+        for row in snapshot(copy, "sessions", ", ".join(added)):
             assert all(value is None for value in row)
+        conn = sqlite3.connect(copy)
+        frames = conn.execute(
+            "SELECT COUNT(*) FROM session_frames").fetchone()[0]
+        conn.close()
+        assert frames == 0
 
     assert m.sha256(DB_PATH) == original_hash

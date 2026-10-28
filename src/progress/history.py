@@ -91,6 +91,38 @@ def short_label(session):
     return f"{name} ({key.side.title()})" if key.side else name
 
 
+# Pseudo-field: the peak shown for a session (see peak_value).
+PEAK_FIELD = "peak"
+
+
+def peak_value(session):
+    """
+    Peak range shown for a session: peak ROM over in-plane movements for
+    metrics v2 (None when no such movement was measured), the raw
+    session maximum for older sessions, whose definition it was.
+    """
+    if (session.get("metrics_version") or 0) >= 2:
+        return session.get("peak_rom")
+    return session.get("max_angle")
+
+
+def peak_series(sessions):
+    xs, ys = [], []
+    for index, session in enumerate(sessions, start=1):
+        value = peak_value(session)
+        if value is not None:
+            xs.append(index)
+            ys.append(value)
+    return xs, ys
+
+
+def status_text(session):
+    status = session.get("session_status")
+    if status is None or status == "COMPLETE":
+        return "complete" if status else MISSING
+    return status.replace("_", " ").lower()
+
+
 def table_row(session):
     """Display strings for one session row."""
 
@@ -99,18 +131,26 @@ def table_row(session):
         session.get("session_date") or MISSING,
         short_label(session),
         reps_text(session),
-        fmt(session.get("max_angle"), suffix=f" {unit}".rstrip()),
-        fmt(session.get("trajectory_similarity"), suffix="%"),
+        fmt(peak_value(session), suffix=f" {unit}".rstrip()),
+        # Movement score Q (DTW shape + range completion), 0-100; the
+        # column name trajectory_similarity is historical.
+        fmt(session.get("trajectory_similarity")),
+        fmt(session.get("dtw_similarity")),
         fmt(session.get("valid_segments"), "{:d}"),
         fmt(pose_coverage(session), "{:.0f}", "%"),
         fmt(session.get("mean_fps"), "{:.1f}"),
+        status_text(session),
     ]
 
 
 TABLE_HEADERS = [
-    "Date", "Exercise", "Reps", "Peak", "Similarity", "Attempts",
-    "Arm tracked", "FPS",
+    "Date", "Exercise", "Reps", "Peak", "Movement score", "DTW shape",
+    "Scored movements", "Arm tracked", "FPS", "Status",
 ]
+
+# Posture deviations above this (degrees) are physically implausible for
+# a seated patient and almost certainly tracking or depth errors.
+POSTURE_PLAUSIBLE_MAX_DEG = 45.0
 
 
 def series(sessions, field):
@@ -157,8 +197,15 @@ def posture_text(session):
         )
         return f"{header}: unavailable ({reason})."
 
-    parts = [
-        f"{name.replace('_', ' ')}: p95 {m['p95_abs_deviation']:g} {m['unit']}"
-        for name, m in data["measures"].items()
-    ]
+    parts = []
+    for name, m in data["measures"].items():
+        part = (f"{name.replace('_', ' ')}: p95 {m['p95_abs_deviation']:g} "
+                f"{m['unit']}")
+        if (
+            m["unit"] == "degrees"
+            and max(m["p95_abs_deviation"], m.get("max_abs_deviation", 0))
+            > POSTURE_PLAUSIBLE_MAX_DEG
+        ):
+            part += " (implausible value: probably a tracking error)"
+        parts.append(part)
     return f"{header}: " + "; ".join(parts) + "."

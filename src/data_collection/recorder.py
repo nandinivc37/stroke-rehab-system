@@ -167,11 +167,10 @@ def main():  # pragma: no cover - requires a webcam
     if not camera.isOpened():
         raise SystemExit("Could not open camera")
 
-    # Same settings as the application's live widget.
-    pose = mp.solutions.pose.Pose(
-        static_image_mode=False, model_complexity=2, smooth_landmarks=True,
-        min_detection_confidence=0.7, min_tracking_confidence=0.7,
-    )
+    # Same settings as the application's live widget (shared config).
+    from src.pose_estimation.config import pose_settings
+    settings = pose_settings()
+    pose = mp.solutions.pose.Pose(**settings)
 
     recorder = LandmarkRecorder()
     recording = False
@@ -225,8 +224,7 @@ def main():  # pragma: no cover - requires a webcam
         "operator": args.operator,
         "notes": args.notes,
         "camera_resolution": [1280, 720],
-        "mediapipe_settings": {"model_complexity": 2,
-                               "smooth_landmarks": True},
+        "mediapipe_settings": settings,
     })
     print(f"Saved {npz} and {meta}")
 

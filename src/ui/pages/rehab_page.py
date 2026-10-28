@@ -14,6 +14,7 @@ import logging
 
 from src.adaptation.workflow import propose_after_session
 from src.database.db import (
+    SESSION_STATUS_APP_CLOSED,
     get_active_prescription,
     get_all_patients,
     get_affected_areas,
@@ -589,9 +590,24 @@ class RehabPage(QWidget):
     # -----------------------------------------------------
 
     def stop_exercise(self):
+        self._finish_session()
+
+    def save_interrupted_session(self):
+        """
+        Called when the application closes during a session: keep what
+        was recorded, marked as interrupted (the adaptive policy never
+        uses incomplete sessions). Returns the session id or None.
+        """
+        if self.live_widget is None:
+            return None
+        return self._finish_session(
+            session_status=SESSION_STATUS_APP_CLOSED, interactive=False,
+        )
+
+    def _finish_session(self, session_status=None, interactive=True):
 
         if self.live_widget is None:
-            return
+            return None
 
         stats = self.live_widget.get_stats()
 
@@ -611,14 +627,31 @@ class RehabPage(QWidget):
                 "No camera frames were processed, so the session was "
                 "not saved."
             )
-            return
+            return None
 
-        self.last_session_id = save_session_summary(
-            self.current_patient_id,
-            self.current_exercise,
-            stats,
-            prescription_id=self.current_prescription_id,
-        )
+        try:
+            self.last_session_id = save_session_summary(
+                self.current_patient_id,
+                self.current_exercise,
+                stats,
+                prescription_id=self.current_prescription_id,
+                session_status=session_status,
+            )
+        except Exception as error:
+            logger.exception("Saving the session failed")
+            self.last_session_id = None
+            message = (
+                "The session could not be saved to the database "
+                f"({type(error).__name__}: {error}). Nothing was recorded "
+                "for this attempt."
+            )
+            self.session_status.setText(message)
+            if interactive:
+                QMessageBox.critical(self, "Session Not Saved", message)
+            return None
+
+        if not interactive:
+            return self.last_session_id
 
         self.last_adaptation = None
         adaptation_text = ""
@@ -652,6 +685,7 @@ class RehabPage(QWidget):
         self.session_status.setText(
             self._summary_text(stats) + adaptation_text
         )
+        return self.last_session_id
 
     def _reload_prescription(self):
         index = self.patient_combo.findData(self.current_patient_id)
@@ -665,16 +699,27 @@ class RehabPage(QWidget):
             if target else f"{stats['reps']} repetitions"
         )
 
-        similarity = stats["trajectory_similarity"]
-        similarity_text = (
-            f"{similarity:.1f}%"
-            if similarity is not None
-            else "not available (no complete movement)"
+        score = stats["trajectory_similarity"]
+        score_text = (
+            f"{score:.1f}/100"
+            if score is not None
+            else "not available (no complete in-plane movement)"
+        )
+        dtw = stats.get("dtw_similarity")
+        dtw_text = (
+            f" (shape similarity to reference {dtw:.1f}/100)"
+            if dtw is not None else ""
+        )
+        status = stats.get("session_status")
+        status_text = (
+            f" | Session incomplete: {status}"
+            if status not in (None, "COMPLETE") else ""
         )
 
         return (
             f"Session saved — {reps} | "
-            f"Movement similarity: {similarity_text}"
+            f"Movement score (DTW shape + range): {score_text}{dtw_text}"
+            f"{status_text}"
             f"{self._tracking_text(stats.get('tracking'))}"
         )
 

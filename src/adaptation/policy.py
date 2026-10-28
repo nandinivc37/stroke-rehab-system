@@ -26,7 +26,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
-POLICY_VERSION = "conservative_v1"
+POLICY_VERSION = "conservative_v2"
 
 INCREASE = "INCREASE"
 DECREASE = "DECREASE"
@@ -37,7 +37,7 @@ INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 @dataclass(frozen=True)
 class PolicyConfig:
     window: int = 2
-    metrics_version: int = 1
+    metrics_version: int = 2
     # Tracking-quality requirements for a session to be used.
     min_measured_fraction: float = 0.8
     min_fps: float = 10.0
@@ -53,9 +53,14 @@ class PolicyConfig:
     max_off_plane_fraction: float = 0.2
     # Hold if similarity fell by more than this between the last two.
     max_similarity_drop: float = 15.0
-    # Decrease: every window session meets at least one of these.
+    # Decrease (every window session must be below target):
+    #   * peak ROM below the range target in every session -> lower the
+    #     range target. Repetitions only count once the range target is
+    #     reached, so such a patient completes 0 repetitions; lowering
+    #     the repetition target would not help (conservative_v1 did that).
+    #   * otherwise fewer than this fraction of target repetitions in
+    #     every session -> lower the repetition target.
     decrease_completion: float = 0.6
-    decrease_range_margin_steps: float = 2.0
 
 
 @dataclass
@@ -112,7 +117,7 @@ def invalid_values(session):
         if value is not None and (not _finite(value) or value < 0):
             problems.append(f"{key}={value!r}")
 
-    for key in ("max_angle", "mean_fps"):
+    for key in ("max_angle", "peak_rom", "mean_fps"):
         value = session.get(key)
         if value is not None and not _finite(value):
             problems.append(f"{key}={value!r}")
@@ -137,6 +142,10 @@ def session_quality_issue(session, policy):
     if session.get("metrics_version") != policy.metrics_version:
         return "recorded with an older/unknown measurement version"
 
+    status = session.get("session_status")
+    if status is not None and status != "COMPLETE":
+        return f"session incomplete ({status})"
+
     invalid = invalid_values(session)
     if invalid:
         return "invalid recorded values (" + ", ".join(invalid) + ")"
@@ -147,8 +156,11 @@ def session_quality_issue(session, policy):
 
     measured = session.get("frames_measured") or 0
     if measured / total < policy.min_measured_fraction:
+        # One decimal: rounding 79.6% to "80%" would contradict the
+        # 80% requirement it failed.
         return (
-            f"arm measured in only {100 * measured / total:.0f}% of frames"
+            f"arm measured in only {100 * measured / total:.1f}% of frames "
+            f"(at least {100 * policy.min_measured_fraction:.0f}% needed)"
         )
 
     errors = session.get("frame_errors") or 0
@@ -162,7 +174,11 @@ def session_quality_issue(session, policy):
 
     fps = session.get("mean_fps")
     if fps is None or fps < policy.min_fps:
-        return "frame rate unknown or too low"
+        return (
+            "frame rate unknown" if fps is None
+            else f"frame rate {fps:.1f} fps is below the "
+                 f"{policy.min_fps:g} fps needed"
+        )
 
     if not session.get("target_reps"):
         return "no repetition target recorded"
@@ -180,7 +196,9 @@ def _session_summary(session, parameters):
         "target_reps": target_reps,
         "completion": (reps / target_reps) if target_reps else None,
         "off_plane_reps": session.get("off_plane_reps") or 0,
-        "peak": session.get("max_angle"),
+        # Peak ROM over in-plane movements (metrics v2); None when no
+        # such movement was measured.
+        "peak": session.get("peak_rom"),
         "target_range": parameters.get("target_range"),
         "trajectory_similarity": session.get("trajectory_similarity"),
         # Context only; not used in the decision.
@@ -266,7 +284,6 @@ def evaluate(exercise, current_parameters, sessions, policy=None):
         ])
 
     target_range = current["target_range"]
-    range_margin = policy.decrease_range_margin_steps * range_param.step
 
     def meets_increase(s):
         problems = []
@@ -289,11 +306,14 @@ def evaluate(exercise, current_parameters, sessions, policy=None):
         return problems
 
     def meets_decrease(s):
+        # No measured in-plane movement is not evidence of low ability.
+        if s["peak"] is None:
+            return []
         reasons = []
+        if s["peak"] < target_range:
+            reasons.append("range_limited")
         if s["completion"] < policy.decrease_completion:
             reasons.append("low_completion")
-        if s["peak"] is not None and s["peak"] < target_range - range_margin:
-            reasons.append("low_range")
         return reasons
 
     increase_problems = [meets_increase(s) for s in window]
@@ -360,9 +380,32 @@ def evaluate(exercise, current_parameters, sessions, policy=None):
 
     if all_decrease and not any_increase:
         proposed = dict(current)
+        range_limited = all("range_limited" in r for r in decrease_reasons)
         low_completion = all("low_completion" in r for r in decrease_reasons)
+        peaks = ", ".join(
+            f"{s['peak']:.0f}" for s in window
+        )
 
-        if low_completion and current["target_reps"] > reps_param.minimum:
+        if range_limited and target_range > range_param.minimum:
+            proposed["target_range"] = range_param.clamp(
+                target_range - range_param.step
+            )
+            changed = "target_range"
+            detail = (
+                f"the peak {exercise.angle_label.lower()} ({peaks} "
+                f"{range_param.unit}) stayed below the range target, so "
+                "no repetition could be counted; the range target is "
+                f"lowered from {target_range:g} to "
+                f"{proposed['target_range']:g} {range_param.unit}"
+            )
+        elif range_limited:
+            return decision(MAINTAIN, [
+                f"In {ids} the peak {exercise.angle_label.lower()} "
+                f"({peaks} {range_param.unit}) stayed below the range "
+                "target, which is already at its lower bound. Therapist "
+                "review is recommended.",
+            ])
+        elif low_completion and current["target_reps"] > reps_param.minimum:
             proposed["target_reps"] = reps_param.clamp(
                 current["target_reps"] - reps_param.step
             )
@@ -372,16 +415,6 @@ def evaluate(exercise, current_parameters, sessions, policy=None):
                 f"repetitions were completed in each; the repetition "
                 f"target is lowered from {current['target_reps']} to "
                 f"{proposed['target_reps']}"
-            )
-        elif target_range > range_param.minimum:
-            proposed["target_range"] = range_param.clamp(
-                target_range - range_param.step
-            )
-            changed = "target_range"
-            detail = (
-                f"performance was below target in each; the range target "
-                f"is lowered from {target_range:g} to "
-                f"{proposed['target_range']:g} {range_param.unit}"
             )
         else:
             return decision(MAINTAIN, [
