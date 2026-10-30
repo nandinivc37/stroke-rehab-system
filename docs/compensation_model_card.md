@@ -1,7 +1,9 @@
 # Compensation models: model card and deployment decision
 
 **Deployment status: NOT deployed.** No compensation classifier runs in
-the application. `COMPENSATION_MODEL_ENABLED = False` in
+the application. The live compensation feedback comes from a rule-based
+geometric check (`geometric_rules_v1`, README "Compensation detection
+status"), which is independent of every model described here. `COMPENSATION_MODEL_ENABLED = False` in
 `src/pose_estimation/inference.py`; nothing under `src/ui` loads a model.
 
 ## Classes
@@ -92,3 +94,39 @@ Even then, Step B uses healthy adults acting compensations. On stroke
 patients in Toronto, no model beat the majority baseline. Compensation
 output must never drive difficulty changes without separate validation;
 the adaptive controller records it as context only.
+
+
+## Decision on retraining (2026-10-30)
+
+Checked on the Ubuntu development laptop (NVIDIA MX350, CUDA available):
+
+* **Present:** the Toronto raw data (`data/toronto/`), the processed
+  windows (`data/processed_toronto/`), the `shared_v1` feature pipeline,
+  and the verified leave-one-participant-out results
+  (`outputs/compensation_step_a/lopo_run_colab/`).
+* **Absent:**
+  * final Step A models;
+  * any labelled MediaPipe compensation data: no Step B recordings, and
+    `data/raw_videos/` and `data/processed_landmarks/` are empty;
+  * any other source of compensation labels. The Mendeley upper-limb
+    video dataset has only "Complete" / "Incomplete" exercise labels.
+
+**Not retrained.** Training a `shared_v1` BiLSTM on all of Toronto would
+take minutes on this laptop. But the only available evaluation is on
+Kinect data, and Step A already did that:
+
+| Model | Pooled macro-F1 | Patient macro-F1 |
+|---|---|---|
+| BiLSTM on `shared_v1` | 0.461 | 0.220 |
+| Majority baseline | — | 0.246 |
+
+A new model could therefore not be shown to work on webcam input or on
+stroke patients, and integrating it would present an unvalidated model
+as a live prediction.
+
+**What a trustworthy model needs:**
+1. Step B labelled MediaPipe recordings, under ethics approval.
+2. A frozen model evaluated on held-out participants against the
+   majority baseline, with confidence intervals.
+3. Compensation labels from stroke patients, not only acted
+   compensation.

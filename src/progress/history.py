@@ -209,3 +209,54 @@ def posture_text(session):
             part += " (implausible value: probably a tracking error)"
         parts.append(part)
     return f"{header}: " + "; ".join(parts) + "."
+
+
+def compensation_summary_text(summary):
+    """
+    One-line text for a geometric compensation summary (dict), or None.
+    Distinguishes detected / not detected / not assessed; never reports
+    an unassessed pattern as "not detected".
+    """
+
+    if not summary:
+        return None
+
+    header = (
+        "Compensation check (rule-based, provisional thresholds, not "
+        "clinically validated; not used for adaptation)"
+    )
+    patterns = summary.get("patterns") or {}
+    if not summary.get("baseline_established"):
+        return (f"{header}: not assessed (no stable resting posture at the "
+                "start of the session).")
+
+    parts = []
+    for p in patterns.values():
+        name = p["label"]
+        if not p["assessed"]:
+            reasons = p.get("unable_reasons") or {}
+            reason = max(reasons, key=reasons.get) if reasons else "no data"
+            parts.append(f"{name}: not assessed ({reason})")
+        elif p["episodes"]:
+            parts.append(
+                f"{name}: DETECTED in {100 * p['detected_fraction']:.0f}% "
+                f"of assessed movement frames ({p['episodes']} episode(s); "
+                f"max {p['max_abs_deviation']:g} {p['unit']}, threshold "
+                f"{p['enter_threshold']:g})")
+        else:
+            parts.append(
+                f"{name}: not detected (max {p['max_abs_deviation']:g} "
+                f"{p['unit']}, threshold {p['enter_threshold']:g})")
+    return f"{header}: " + "; ".join(parts) + "."
+
+
+def compensation_text(session):
+    """Stored compensation summary of a session row, or None."""
+
+    raw = session.get("compensation_json")
+    if not raw:
+        return None
+    try:
+        return compensation_summary_text(json.loads(raw))
+    except (TypeError, ValueError, KeyError):
+        return "Compensation check: stored summary could not be read."

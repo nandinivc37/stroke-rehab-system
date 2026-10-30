@@ -77,11 +77,18 @@ def test_prescribed_exercise_side_and_parameters_drive_session(
     }
     posture = json.loads(row["experimental_posture_json"])
     assert posture["experimental"] is True and posture["validated"] is False
-    # No validated compensation classifier: stored as NULL, never 0.
-    for column in ("compensation_method", "comp_windows_total",
+    # No compensation classifier: its window-count columns stay NULL,
+    # never 0. The rule-based check is stored as provisional/unvalidated.
+    for column in ("comp_windows_total",
                    "comp_no_compensation", "comp_shoulder_elevation",
                    "comp_trunk_rotation", "comp_lean_forward"):
         assert row[column] is None
+    assert row["compensation_method"] == "geometric_rules_v1"
+    compensation = json.loads(row["compensation_json"])
+    assert compensation["validated"] is False
+    assert compensation["used_for_adaptation"] is False
+    # Steady synthetic posture: nothing detected in what was assessed.
+    assert compensation["any_detected"] is False
     assert "Session saved" in page.session_status.text()
 
 

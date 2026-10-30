@@ -391,7 +391,10 @@ def test_attempts_persist_action_and_feedback(qapp, abduction,
     assert [h["action"] for h in history] == [MAINTAIN, REPEAT]
     stored = json.loads(history[0]["inputs_json"])["controller"]
     assert stored["controller_version"] == "attempt_controller_v1"
-    assert stored["compensation"]["status"] == "NOT_ASSESSED"
+    # Sessions now carry the rule-based compensation summary: recorded,
+    # never used in the decision.
+    assert stored["compensation"]["status"] == "PRESENT_NOT_USED"
+    assert stored["compensation"]["used_in_decision"] is False
     assert stored["feedback"] == history[0]["feedback"]
     sessions = db.get_sessions(patient_id)
     assert [h["session_id"] for h in history] == [

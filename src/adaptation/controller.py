@@ -165,8 +165,8 @@ def describe_compensation(compensation):
         "status": COMPENSATION_PRESENT_NOT_USED,
         "used_in_decision": False,
         "note": "A compensation output was supplied but is not used: no "
-                "compensation classifier is validated for this "
-                "application.",
+                "compensation method (classifier or rule-based check) is "
+                "validated for this application.",
     }
 
 

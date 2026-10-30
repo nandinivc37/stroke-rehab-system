@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SESSION_COLUMNS = [
     # What was performed, and with which prescription/configuration.
@@ -72,6 +72,11 @@ SESSION_COLUMNS = [
     # Pipeline configuration (pose model, threading, frame size) and
     # per-stage timing (JSON).
     ("diagnostics_json", "TEXT"),
+    # --- Schema 3 ---
+    # Rule-based compensation detection summary (JSON; method in
+    # compensation_method). Provisional thresholds, not validated, never
+    # used for adaptation. NULL = not run (sessions before schema 3).
+    ("compensation_json", "TEXT"),
 ]
 
 RECOMMENDATION_COLUMNS = [

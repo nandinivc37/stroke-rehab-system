@@ -12,6 +12,10 @@ from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from src.adaptation.policy import PolicyConfig
+from src.compensation_detection.geometric_detector import (
+    GeometricCompensationDetector,
+    feedback as compensation_feedback,
+)
 from src.compensation_detection.geometric_measures import (
     ExperimentalPostureMonitor,
 )
@@ -30,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 # The Kinect-trained BiLSTM compensation model is intentionally NOT used
 # here: its features are incompatible with MediaPipe landmarks (see
-# README, "Compensation detection status").
+# README, "Compensation detection status"). Live compensation feedback
+# comes from the rule-based geometric detector (provisional thresholds,
+# not clinically validated, never used for adaptation).
 
 # Stop analysing after this many consecutive frames fail, rather than
 # silently continuing with a broken pipeline.
@@ -57,6 +63,21 @@ FPS_STYLE = """
 """
 FPS_OK_COLOUR = "#ffffff"
 FPS_LOW_COLOUR = "#fde047"
+
+COMPENSATION_STYLE = """
+    background-color: {background};
+    color: {colour};
+    font-size: 15px;
+    font-weight: 700;
+    padding: 6px 10px;
+    border-radius: 6px;
+"""
+# (background, text) per feedback level; all pairs >= 4.5:1 contrast.
+COMPENSATION_COLOURS = {
+    "alert": ("#fef3c7", "#78350f"),
+    "ok": ("#dcfce7", "#14532d"),
+    "info": ("#f3f4f6", "#374151"),
+}
 
 
 def _timing_summary(values_s):
@@ -133,8 +154,15 @@ class LivePoseWidget(QWidget):
             self.affected_side
         )
 
+        # Rule-based compensation detection on the same landmarks.
+        self.compensation = GeometricCompensationDetector(
+            self.affected_side,
+            getattr(self.exercise, "exercise_id", None),
+        )
+
         self.camera = None
         self.pose = None
+        self._compensation_feedback = None
         self.worker = None
         self.pose_config = None
         self._display_pending = False
@@ -185,8 +213,22 @@ class LivePoseWidget(QWidget):
             FPS_STYLE.format(colour=FPS_OK_COLOUR)
         )
 
+        self.compensation_label = QLabel(
+            "Posture check (experimental): waiting for camera"
+        )
+        self.compensation_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.compensation_label.setWordWrap(True)
+        self.compensation_label.setToolTip(
+            "Rule-based check of trunk lean and shoulder hiking relative to "
+            "your resting posture. Provisional thresholds; not clinically "
+            "validated; does not change exercise difficulty."
+        )
+        self._set_compensation_label(
+            "Posture check (experimental): waiting for camera", "info")
+
         layout.addWidget(self.video_label)
         layout.addWidget(self.fps_label)
+        layout.addWidget(self.compensation_label)
         layout.addWidget(self.status_label)
 
         # Unthreaded fallback (threaded=False).
@@ -260,6 +302,7 @@ class LivePoseWidget(QWidget):
     def _reset_session_state(self):
         self.analyzer.reset()
         self.posture_monitor.reset()
+        self.compensation.reset()
         self.frame_times.clear()
         self.consecutive_errors = 0
         self.consecutive_read_failures = 0
@@ -364,7 +407,8 @@ class LivePoseWidget(QWidget):
             else:
                 status = f"Frame processing error: {self.last_error}"
 
-        return {"display": display, "status": status, "fps": self._fps()}
+        return {"display": display, "status": status, "fps": self._fps(),
+                "compensation": self._compensation_feedback}
 
     def recent_fps(self):
         """Processed frames per second over the last few frames."""
@@ -417,6 +461,8 @@ class LivePoseWidget(QWidget):
             analysis.movement_active,
         )
 
+        self._update_compensation(results, analysis.movement_active)
+
         display = frame.copy()
 
         if results.pose_landmarks:
@@ -437,6 +483,30 @@ class LivePoseWidget(QWidget):
 
         return display, self._status_text()
 
+    def _update_compensation(self, results, movement_active):
+        """
+        Compensation check for this frame. Its failure must not stop
+        repetition counting or DTW, so errors only disable the check.
+        """
+        try:
+            frame = self.compensation.update(results, movement_active)
+            self._compensation_feedback = compensation_feedback(
+                frame, self.compensation.config, movement_active,
+                self.compensation.baseline_established(),
+            )
+        except Exception as error:
+            logger.exception("Compensation check failed")
+            self._compensation_feedback = (
+                "Posture check (experimental): unable to assess "
+                f"(error: {type(error).__name__})", "info")
+
+    def _set_compensation_label(self, text, level):
+        background, colour = COMPENSATION_COLOURS.get(
+            level, COMPENSATION_COLOURS["info"])
+        self.compensation_label.setText(text)
+        self.compensation_label.setStyleSheet(COMPENSATION_STYLE.format(
+            background=background, colour=colour))
+
     def _present(self, output):
         """GUI-thread half: show a step's output."""
 
@@ -454,6 +524,9 @@ class LivePoseWidget(QWidget):
             text, colour = output["fps"]
             self.fps_label.setText(text)
             self.fps_label.setStyleSheet(FPS_STYLE.format(colour=colour))
+
+        if output.get("compensation") is not None:
+            self._set_compensation_label(*output["compensation"])
 
     def _reps_text(self):
         target = self.analyzer.parameters.get("target_reps")
@@ -570,6 +643,7 @@ class LivePoseWidget(QWidget):
         self._stop_worker()
         stats = self.analyzer.summary()
         stats["experimental_posture"] = self.posture_monitor.summary()
+        stats["compensation"] = self.compensation.summary()
         stats["analysis_halted"] = self.analysis_halted
         stats["last_error"] = self.last_error
         stats["session_status"] = self.session_status()

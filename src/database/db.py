@@ -550,8 +550,9 @@ def save_session_summary(
     Persist a session summary produced by ExerciseAnalyzer (plus the
     widget's experimental posture summary and diagnostics) and its
     per-frame log, in one transaction. Values that were not measured
-    are stored as NULL. Compensation-classifier columns are left NULL:
-    no validated classifier is in use.
+    are stored as NULL. The rule-based compensation summary (if any) is
+    stored in compensation_method / compensation_json; the classifier
+    window-count columns stay NULL: no classifier is in use.
 
     session_status overrides stats["session_status"] (e.g. when the
     application was closed during the session).
@@ -611,10 +612,10 @@ def _insert_session(conn, patient_id, exercise_name, stats,
             frames_measured, frame_errors, mean_fps,
             experimental_posture_json, peak_rom, dtw_similarity,
             dtw_mean_error_deg, session_status, interrupted_reps,
-            diagnostics_json
+            diagnostics_json, compensation_method, compensation_json
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         patient_id,
         exercise_name,
@@ -645,6 +646,8 @@ def _insert_session(conn, patient_id, exercise_name, stats,
         status,
         stats.get("interrupted_reps"),
         _json_or_none(stats.get("diagnostics")),
+        (stats.get("compensation") or {}).get("method"),
+        _json_or_none(stats.get("compensation")),
     ))
     return cursor.lastrowid
 

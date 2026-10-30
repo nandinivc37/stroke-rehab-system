@@ -305,9 +305,10 @@ code and weights (`outputs/compensation_model_lstm/`) are unchanged. See
   test participants (the training script is corrected but not re-run:
   the Toronto data is not on this machine).
 
-**This copy of the project does not contain `outputs/compensation_step_a/`
-or `data/toronto/`**, so the Step A figures below could not be
-re-verified here.
+`outputs/compensation_step_a/` and `data/toronto/` are present on the
+Ubuntu development laptop (where the Step A run was verified) but may be
+missing from other copies of the project; the Step A figures below can
+only be re-verified where they exist.
 
 Why: it was trained on Toronto Rehab Stroke Pose Kinect features
 (pre-normalized skeletons, non-causal Savitzky–Golay smoothing, spine
@@ -325,6 +326,33 @@ adaptive decisions.
 
 What exists instead:
 
+* **Rule-based compensation check** (`geometric_rules_v1`,
+  `src/compensation_detection/geometric_detector.py`), **live in the
+  application**. Provisional thresholds, **not clinically validated**,
+  never used for adaptation.
+  * **Patterns** (deviation from the patient's own resting posture,
+    calibrated at the start of each session with the arms relaxed):
+    * trunk lean in the camera image plane (sideways in a front view),
+      10° to start, 7° to end;
+    * trunk lean towards the camera (depth-based, noisier), 15° / 10°;
+    * affected-shoulder hiking along the trunk axis, 0.10 / 0.07 shoulder
+      widths for elbow flexion, and 0.15 / 0.11 for shoulder exercises
+      (raising the arm lifts the shoulder girdle physiologically).
+  * Trunk rotation is not implemented: frontal MediaPipe depth is too
+    noisy to separate it from tracking error.
+  * Each check is **detected / not detected / unable to assess**.
+    Missing or low-visibility landmarks, no stable resting baseline, and
+    resting frames are never reported as "not detected".
+  * 5-frame median smoothing; an episode needs 5 consecutive frames to
+    start and 5 to end; brief dropouts (≤ 3 frames) are bridged.
+  * Uses the landmarks already computed for each frame, on the capture
+    thread (about 0.13 ms per frame).
+  * **Live:** a "Posture check (experimental)" line under the video.
+    **After End Session:** a summary line. **Progress page:** the session
+    detail. **Stored:** `sessions.compensation_method` and
+    `compensation_json` (schema 3).
+  * Thresholds and per-exercise overrides are in `DetectorConfig`; each
+    session stores the configuration it used.
 * **Experimental posture measurements** (`geometric_v1`,
   `src/compensation_detection/geometric_measures.py`): shoulder elevation
   and trunk lean/rotation relative to the session's resting baseline.
@@ -546,7 +574,9 @@ preserved.
 | Sustained processing capacity (threaded pipeline, video file instead of webcam, crowded multi-person scene, i5-13420H) | complexity 0: 9.2 fps, 1: 3.7 fps, 2: 2.2 fps | pessimistic scene; live single-person rate must be measured |
 | Adaptive loop end to end (controller, approval, rejection, next attempt, range-limited patient) | automated, synthetic sessions through the real session page and database | implemented and tested; not demonstrated live |
 | Step A model comparison (Toronto, Kinect) | README section above | not re-verifiable in this copy (outputs missing) |
-| Compensation detection on MediaPipe | diagnostic: original model outputs "No Compensation" for everything | **NOT VALIDATED, not deployed**; Step B not started |
+| Automated tests (`pytest`, Ubuntu, Python 3.12, 2026-10-30) | 466 passed, 0 failed, 1 skipped (Step A final models not trained) | passing; synthetic inputs only |
+| Rule-based compensation check (`geometric_rules_v1`) | automated, synthetic poses: each pattern, normal movement, restricted ROM, slow movement, jitter, occlusion, body scale, both sides, hysteresis, persistence, live widget, adaptation independence | implemented and tested; **NOT validated on webcam data or clinically**; thresholds provisional |
+| Compensation classifiers (original BiLSTM, Step A models) on MediaPipe | diagnostic: original model outputs "No Compensation" for everything; no labelled MediaPipe data exists | **NOT VALIDATED, not deployed**; Step B not started |
 | Clinical validity of any measure, threshold or rule | — | **NOT VALIDATED** |
 
 Synthetic and simulated inputs show the software behaves as designed;
@@ -566,6 +596,7 @@ they are not evidence of accuracy on real webcam data.
 | Adaptive controller: rules, safety, uncertainty, compensation exclusion, propagation to the next attempt | `test_adaptive_controller.py` |
 | Progress page, dashboard | `test_progress_and_dashboard.py` |
 | Experimental posture measurements | `test_geometric_measures.py` |
+| Rule-based compensation check (detector, live widget, persistence, adaptation independence) | `test_geometric_compensation.py` |
 | Metrics v2: DTW normalisation, fps-independent counting, glitches, gaps, peak ROM, mirrored input, per-frame log | `test_metrics_v2.py` |
 | Worker thread, unmirrored input, persistence of v2 metrics and frame logs, save failure, app close, range-limited patient loop, rejection | `test_live_pipeline_v2.py` |
 | Recommendation rules (baseline ROM, restrictions, eligibility) and therapist-edited parameters | `test_recommendation_rules.py` |
@@ -588,8 +619,15 @@ before analysis).
 * **No validated compensation detection.** The original BiLSTM is
   disabled. The Step A comparison is complete but Kinect-only: no
   model was distinguishable from the others, and none exceeded the
-  majority baseline on stroke patients. Step B has not started, and
-  geometric posture measurements are experimental.
+  majority baseline on stroke patients. Step B has not started.
+* **The live compensation check is rule-based with provisional
+  thresholds.**
+  * It depends on a still, upright resting posture at the start of each
+    session, and on both shoulders and hips being visible.
+  * Depth-based forward lean is noisy.
+  * Shoulder hiking during shoulder exercises overlaps with normal
+    shoulder-girdle movement.
+  * It has not been compared with therapist judgement.
 * **Thresholds and adaptive rules are engineering defaults**, not
   clinically validated; therapist review is required.
 * **Reference movements are synthetic**, not clinician recordings.

@@ -21,6 +21,7 @@ from src.database.db import (
     save_session_summary,
 )
 from src.exercises.catalogue import get_exercise_config
+from src.progress.history import compensation_summary_text
 
 logger = logging.getLogger(__name__)
 
@@ -721,7 +722,13 @@ class RehabPage(QWidget):
             f"Movement score (DTW shape + range): {score_text}{dtw_text}"
             f"{status_text}"
             f"{self._tracking_text(stats.get('tracking'))}"
+            f"{self._compensation_text(stats.get('compensation'))}"
         )
+
+    @staticmethod
+    def _compensation_text(summary):
+        text = compensation_summary_text(summary)
+        return f"\n{text}" if text else ""
 
     @staticmethod
     def _tracking_text(tracking):

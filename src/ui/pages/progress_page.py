@@ -36,6 +36,7 @@ from src.progress.history import (
     fmt,
     group_sessions,
     peak_series,
+    compensation_text,
     posture_text,
     series,
     table_row,
@@ -472,6 +473,9 @@ class ProgressPage(QWidget):
                 f"{fmt(session.get('off_plane_reps'), '{:d}')}; "
                 f"frame errors: {fmt(session.get('frame_errors'), '{:d}')}."
             )
+            compensation = compensation_text(session)
+            if compensation:
+                lines.append(compensation)
             posture = posture_text(session)
             if posture:
                 lines.append(posture)

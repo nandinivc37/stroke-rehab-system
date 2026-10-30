@@ -187,6 +187,10 @@ def test_migration_on_copy_of_real_database(tmp_path):
     conn = sqlite3.connect(copy)
     already = m.schema_version(conn) >= m.SCHEMA_VERSION
     columns_before = m.existing_columns(conn, "sessions")
+    frames_before = (
+        conn.execute("SELECT COUNT(*) FROM session_frames").fetchone()[0]
+        if m.existing_columns(conn, "session_frames") else 0
+    )
     conn.close()
 
     before = snapshot(copy, "sessions", ORIGINAL_SESSION_COLUMNS)
@@ -206,10 +210,12 @@ def test_migration_on_copy_of_real_database(tmp_path):
         assert added
         for row in snapshot(copy, "sessions", ", ".join(added)):
             assert all(value is None for value in row)
+        # No per-frame rows are created by the migration (a database
+        # already at schema 2 legitimately has some).
         conn = sqlite3.connect(copy)
         frames = conn.execute(
             "SELECT COUNT(*) FROM session_frames").fetchone()[0]
         conn.close()
-        assert frames == 0
+        assert frames == frames_before
 
     assert m.sha256(DB_PATH) == original_hash
