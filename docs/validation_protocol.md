@@ -22,8 +22,9 @@ landmark-derived numbers only, never video.
 ## 1. Setup
 
 * Camera upright on a tripod at about shoulder height, 2-2.5 m away.
-  Shoulder flexion and forward reach: side or 45° view. Shoulder
-  abduction: frontal view. Elbow flexion: frontal or side.
+  Shoulder flexion: frontal view (patient facing the camera, arm
+  resting by the side at the start). Forward reach: side or 45° view.
+  Shoulder abduction: frontal view. Elbow flexion: frontal or side.
 * Upper body and both hips visible; even light; fitted clothing.
 * Optional sanity check of the axis convention with your camera:
   `python -m src.validation.axis_convention --camera 0 --frames 150`

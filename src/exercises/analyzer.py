@@ -19,6 +19,9 @@ changes only what the legacy config does not use:
   * peak ROM from in-plane movements using a 3-frame median, instead of
     the raw maximum over the whole session;
   * off-plane segments are reported but not scored against the reference;
+  * with PlaneCheckConfig.require_known_plane, repetitions and segments
+    whose plane could not be verified are treated like off-plane ones
+    (counted in off_plane_reps, broken out as plane_unverified_reps);
   * DTW error normalised by warping-path length (DtwConfig.normalization);
   * the smoothness indicator computed on a 10 Hz time base.
 """
@@ -29,7 +32,7 @@ from dataclasses import dataclass
 from statistics import median
 from typing import Optional
 
-from src.exercises.angles import LANDMARK_NAMES
+from src.exercises.angles import LANDMARK_NAMES, PLANE_UNVERIFIED
 from src.quality_assessment.dtw import dtw_distance, similarity_from_error
 
 STATUS_NO_POSE = "no_pose"
@@ -157,8 +160,11 @@ class ExerciseAnalyzer:
     # -----------------------------------------------------
 
     def reset(self):
+        # Fresh measurement per session (stateful ones calibrate).
+        self.angle_fn = self.config.make_angle_fn()
         self.reps = 0
         self.off_plane_reps = 0
+        self.plane_unverified_reps = 0
         self.interrupted_reps = 0
         self.stage = "down"
         self.up_frames = 0
@@ -168,7 +174,9 @@ class ExerciseAnalyzer:
         self._prev_zone = None
         self._prev_zone_t = None
         self._up_plane_votes = []
+        self._up_unverified = 0
         self._rep_in_plane = True
+        self._rep_plane_verified = True
         self._excursion_peak = None
         self.rep_peaks = []          # [(robust peak, in plane)]
         self._recent = deque(maxlen=3)
@@ -178,6 +186,8 @@ class ExerciseAnalyzer:
         self.current_segment = []
         self._segment_planes = []
         self._current_planes = []
+        self._segment_unverified = []
+        self._current_unverified = []
         self._segment_times = []
         self._current_times = []
         self._current_active_frames = 0
@@ -186,6 +196,7 @@ class ExerciseAnalyzer:
 
         self.current_angle = 0
         self.current_plane = None
+        self.current_plane_status = None
         self.max_angle = 0
         self.min_angle = 180
 
@@ -328,7 +339,7 @@ class ExerciseAnalyzer:
             self._log(timestamp, STATUS_NOT_VISIBLE, visibility=visibility)
             return self._frame(STATUS_NOT_VISIBLE)
 
-        reading = self.config.angle_fn(results, self.side)
+        reading = self.angle_fn(results, self.side)
 
         if reading is None or not math.isfinite(reading.value):
             self.frames_unmeasurable += 1
@@ -337,6 +348,9 @@ class ExerciseAnalyzer:
 
         angle = float(reading.value)
         plane = reading.plane
+        unverified = (
+            plane is None and reading.plane_status in PLANE_UNVERIFIED
+        )
 
         if self._implausible(angle, timestamp):
             self.frames_implausible += 1
@@ -354,14 +368,15 @@ class ExerciseAnalyzer:
         self._log(timestamp, STATUS_OK, angle, plane, visibility,
                   reading.reference_frame)
 
-        self._update_segmentation(angle, plane, timestamp)
+        self._update_segmentation(angle, plane, timestamp, unverified)
 
         self.current_angle = angle
         self.current_plane = plane
+        self.current_plane_status = reading.plane_status
         self.max_angle = max(self.max_angle, angle)
         self.min_angle = min(self.min_angle, angle)
 
-        self._update_reps(angle, plane, timestamp)
+        self._update_reps(angle, plane, timestamp, unverified)
 
         return self._frame(STATUS_OK, angle, plane)
 
@@ -404,6 +419,7 @@ class ExerciseAnalyzer:
         self._down_dwell = 0.0
         self._prev_zone = None
         self._up_plane_votes = []
+        self._up_unverified = 0
         self._excursion_peak = None
         self._recent.clear()
 
@@ -417,7 +433,8 @@ class ExerciseAnalyzer:
             movement_active=self.movement_active,
         )
 
-    def _update_segmentation(self, angle, plane, timestamp):
+    def _update_segmentation(self, angle, plane, timestamp,
+                             unverified=False):
         seg = self.config.segmentation
 
         if angle >= seg.start_threshold:
@@ -428,6 +445,7 @@ class ExerciseAnalyzer:
 
         self.current_segment.append(angle)
         self._current_planes.append(plane)
+        self._current_unverified.append(unverified)
         self._current_times.append(self._relative_time(timestamp))
         self.trajectory.append(angle)
 
@@ -443,10 +461,14 @@ class ExerciseAnalyzer:
                 ):
                     self.movement_segments.append(self.current_segment.copy())
                     self._segment_planes.append(list(self._current_planes))
+                    self._segment_unverified.append(
+                        list(self._current_unverified)
+                    )
                     self._segment_times.append(list(self._current_times))
 
                 self.current_segment = []
                 self._current_planes = []
+                self._current_unverified = []
                 self._current_times = []
                 self._current_active_frames = 0
                 self.movement_active = False
@@ -491,7 +513,18 @@ class ExerciseAnalyzer:
         self._prev_zone_t = timestamp
         return added
 
-    def _update_reps(self, angle, plane, timestamp):
+    def _rep_plane_decision(self):
+        """(in plane, plane verified) for the repetition going up."""
+        votes = [v for v in self._up_plane_votes if v is not None]
+        check = self.config.plane_check
+        if check is not None and check.require_known_plane:
+            verified = bool(votes) and len(votes) >= self._up_unverified
+            return verified and sum(votes) * 2 >= len(votes), verified
+        # Unknown plane (no plane check, or not measurable) does not
+        # block the repetition.
+        return not votes or sum(votes) * 2 >= len(votes), True
+
+    def _update_reps(self, angle, plane, timestamp, unverified=False):
         rep = self.config.rep
         robust = median(self._recent) if self._recent else angle
 
@@ -501,6 +534,7 @@ class ExerciseAnalyzer:
             self._down_dwell = 0.0
             self._up_dwell += self._zone_dwell("up", timestamp)
             self._up_plane_votes.append(self._plane_ok(plane))
+            self._up_unverified += unverified
             self._track_peak(robust)
 
             if (
@@ -508,11 +542,8 @@ class ExerciseAnalyzer:
                 and self.stage == "down"
             ):
                 self.stage = "up"
-                votes = [v for v in self._up_plane_votes if v is not None]
-                # Unknown plane (no plane check, or not measurable)
-                # does not block the repetition.
-                self._rep_in_plane = (
-                    not votes or sum(votes) * 2 >= len(votes)
+                self._rep_in_plane, self._rep_plane_verified = (
+                    self._rep_plane_decision()
                 )
 
         elif angle <= rep.down_threshold:
@@ -521,6 +552,7 @@ class ExerciseAnalyzer:
             self._up_dwell = 0.0
             self._down_dwell += self._zone_dwell("down", timestamp)
             self._up_plane_votes = []
+            self._up_unverified = 0
 
             if (
                 self._debounced(self.down_frames, self._down_dwell,
@@ -535,6 +567,8 @@ class ExerciseAnalyzer:
                     self.reps += 1
                 else:
                     self.off_plane_reps += 1
+                    if not self._rep_plane_verified:
+                        self.plane_unverified_reps += 1
                 self._excursion_peak = None
             elif self.stage == "down":
                 self._excursion_peak = None
@@ -556,10 +590,10 @@ class ExerciseAnalyzer:
         """Completed segments plus an unfinished one at session end."""
 
         segments = [
-            (segment.copy(), planes, times)
-            for segment, planes, times in zip(
+            (segment.copy(), planes, times, unverified)
+            for segment, planes, times, unverified in zip(
                 self.movement_segments, self._segment_planes,
-                self._segment_times,
+                self._segment_times, self._segment_unverified,
             )
         ]
 
@@ -568,21 +602,25 @@ class ExerciseAnalyzer:
         ):
             segments.append(
                 (self.current_segment.copy(), list(self._current_planes),
-                 list(self._current_times))
+                 list(self._current_times), list(self._current_unverified))
             )
 
         return segments
 
-    def segment_in_plane(self, segment, planes):
+    def segment_in_plane(self, segment, planes, unverified=None):
         """
         True/False when the segment's elevated frames (angle at least
         plane_check.min_elevation, plane measurable) mostly lie within the
         plane tolerance; None when there is no plane check or no such
-        frame. Same majority rule as repetition counting.
+        frame, or when the plane is required but not verified (see
+        segment_plane_verified). Same majority rule as repetition
+        counting.
         """
 
         check = self.config.plane_check
         if check is None:
+            return None
+        if not self.segment_plane_verified(segment, planes, unverified):
             return None
         votes = [
             abs(plane - check.expected_plane) <= check.tolerance
@@ -592,6 +630,28 @@ class ExerciseAnalyzer:
         if not votes:
             return None
         return sum(votes) * 2 >= len(votes)
+
+    def segment_plane_verified(self, segment, planes, unverified=None):
+        """
+        False when the exercise requires a known plane and fewer of the
+        segment's elevated frames have a known plane than an unverified
+        one; True otherwise (including segments never elevated enough
+        for a plane, which are treated as before).
+        """
+
+        check = self.config.plane_check
+        if check is None or not check.require_known_plane:
+            return True
+        flags = unverified or [False] * len(segment)
+        known = unknown = 0
+        for angle, plane, flag in zip(segment, planes, flags):
+            if angle < check.min_elevation:
+                continue
+            if plane is not None:
+                known += 1
+            elif flag:
+                unknown += 1
+        return known >= unknown
 
     def peak_rom(self, segment_details):
         """
@@ -606,7 +666,9 @@ class ExerciseAnalyzer:
         ]
         candidates += [
             d["robust_peak"] for d in segment_details
-            if d.get("in_plane") is not False and d["robust_peak"] is not None
+            if d.get("in_plane") is not False
+            and d.get("plane_verified", True)
+            and d["robust_peak"] is not None
         ]
         return round(max(candidates), 2) if candidates else None
 
@@ -623,8 +685,9 @@ class ExerciseAnalyzer:
         dtw_scores = []
         dtw_errors = []
         off_plane_segments = 0
+        plane_unverified_segments = 0
 
-        for segment, planes, times in self._scored_segments():
+        for segment, planes, times, unverified in self._scored_segments():
             if len(segment) < seg_config.min_segment_frames:
                 continue
 
@@ -634,8 +697,14 @@ class ExerciseAnalyzer:
             if movement_range < seg_config.min_range:
                 continue
 
-            in_plane = self.segment_in_plane(segment, planes) if self.v2 \
-                else None
+            in_plane = (
+                self.segment_in_plane(segment, planes, unverified)
+                if self.v2 else None
+            )
+            plane_verified = (
+                self.segment_plane_verified(segment, planes, unverified)
+                if self.v2 else True
+            )
             robust_peak = rolling_median_peak(segment) if self.v2 \
                 else patient_peak
 
@@ -654,6 +723,7 @@ class ExerciseAnalyzer:
             if self.v2:
                 detail["robust_peak"] = round(robust_peak, 2)
                 detail["in_plane"] = in_plane
+                detail["plane_verified"] = plane_verified
                 known = [t for t in times if t is not None]
                 detail["duration_s"] = (
                     round(known[-1] - known[0], 3) if len(known) > 1
@@ -667,10 +737,12 @@ class ExerciseAnalyzer:
 
             detail["velocity_peaks"] = velocity_peak_count(smooth_input)
 
-            if in_plane is False:
-                # Different movement plane: not compared with the
-                # reference and not part of the movement score.
+            if in_plane is False or not plane_verified:
+                # Different (or unverifiable) movement plane: not
+                # compared with the reference and not part of the
+                # movement score.
                 off_plane_segments += 1
+                plane_unverified_segments += not plane_verified
                 detail.update({
                     "dtw_similarity": None,
                     "dtw_mean_error_deg": None,
@@ -777,6 +849,8 @@ class ExerciseAnalyzer:
                 ),
                 "dtw_normalization": normalization,
                 "off_plane_segments": off_plane_segments,
+                "plane_unverified_segments": plane_unverified_segments,
+                "plane_unverified_reps": self.plane_unverified_reps,
                 "interrupted_reps": self.interrupted_reps,
                 "rep_in_progress_at_end": self.stage == "up",
                 "frame_log": list(self.frame_log),

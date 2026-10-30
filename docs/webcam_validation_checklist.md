@@ -37,7 +37,7 @@ where possible:
 
 | # | Check | Result |
 |---|---|---|
-| 2.1 | Reference animation shows the correct movement and side (flexion/reach/elbow: side view; abduction: front view) | |
+| 2.1 | Reference animation shows the correct movement and side (flexion: oblique view; reach/elbow: side view; abduction: front view) | |
 | 2.2 | Displayed angle at rest, ~45°, ~90° and peak vs reference measurement (record the differences) | |
 | 2.3 | 5 deliberate full repetitions above target → 5 reps counted | |
 | 2.4 | 3 partial repetitions below target → 0 reps; attempts still scored | |
@@ -46,6 +46,7 @@ where possible:
 | 2.7 | Elbow flexion started with the forearm on a table: note behaviour (expected to fail the instructions) | |
 | 2.8 | Forward reach with trunk lean only (arm still): note whether "reach" increases (known depth/lean limitation) | |
 | 2.9 | Movement similarity (DTW) higher for a movement that follows the reference timing than for a jerky or partial one | |
+| 2.10 | Flexion, facing the camera: the "calibrate" hint clears within about 1 s of resting the arm; forward raises to ~60°, ~90° and ~120° match the inclinometer; reps count without turning sideways; note any "movement direction unclear" messages and `plane_unverified_reps` | |
 
 ## 3. Session persistence
 

@@ -27,6 +27,9 @@ class AngleReading:
     # "hips": trunk axis from hips to shoulders; "camera": hips not
     # visible, camera vertical used instead (assumes an upright camera).
     reference_frame: Optional[str] = None
+    # Why the plane is (not) known, for measurements that report it
+    # (see angles.PLANE_*). None when the measurement does not say.
+    plane_status: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,10 @@ class PlaneCheckConfig:
     tolerance: float
     # Plane is only meaningful once the arm is clearly elevated.
     min_elevation: float = 30.0
+    # When True, a repetition or segment whose plane could not be
+    # verified (AngleReading.plane_status in angles.PLANE_UNVERIFIED) is
+    # not counted or scored, instead of being treated as in plane.
+    require_known_plane: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,12 +173,22 @@ class ExerciseConfig:
     # rejected as tracking glitches (e.g. a left/right landmark swap).
     # None disables the check.
     max_speed: Optional[float] = None
+    # () -> stateful (results, side) measurement. When set, each
+    # analyzer session (and the reference) uses a fresh instance instead
+    # of angle_fn, e.g. for per-session calibration.
+    angle_fn_factory: Optional[Callable[[], Callable]] = None
 
     # Shown in the exercise catalogue / UI.
     instructions: str = ""
     implemented: bool = True
     webcam_validated: bool = False
     notes: str = ""
+
+    def make_angle_fn(self):
+        """The measurement to use for one session or reference."""
+        if self.angle_fn_factory is not None:
+            return self.angle_fn_factory()
+        return self.angle_fn
 
     def parameter(self, name):
         for parameter in self.adaptive_parameters:

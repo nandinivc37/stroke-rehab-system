@@ -469,7 +469,8 @@ class ProgressPage(QWidget):
                 )
             )
             lines.append(
-                f"Off-plane repetitions (not counted): "
+                f"Repetitions not counted (wrong or unverified movement "
+                f"plane): "
                 f"{fmt(session.get('off_plane_reps'), '{:d}')}; "
                 f"frame errors: {fmt(session.get('frame_errors'), '{:d}')}."
             )

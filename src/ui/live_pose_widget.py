@@ -27,6 +27,7 @@ from src.exercises.analyzer import (
     STATUS_OK,
     STATUS_UNMEASURABLE,
 )
+from src.exercises.angles import PLANE_CALIBRATING, PLANE_DEPTH_AMBIGUOUS
 from src.exercises.legacy import LEGACY_SHOULDER_RAISE_2D
 from src.pose_estimation.config import pose_settings
 
@@ -47,6 +48,15 @@ MAX_CONSECUTIVE_READ_FAILURES = 60
 # rates seen on a CPU). The session average is the analyzer's mean_fps,
 # the same value the adaptive policy's frame-rate gate checks.
 RECENT_FPS_FRAMES = 20
+
+# Shown while the movement plane cannot be verified (front-facing
+# shoulder flexion); such repetitions are not counted.
+PLANE_HINTS = {
+    PLANE_CALIBRATING: "\nRest the arm by your side for a moment to "
+                       "calibrate (repetitions are not counted yet).",
+    PLANE_DEPTH_AMBIGUOUS: "\nMovement direction unclear: face the "
+                           "camera and raise the arm forward.",
+}
 
 # Session status values stored in sessions.session_status.
 SESSION_COMPLETE = "COMPLETE"
@@ -612,7 +622,14 @@ class LivePoseWidget(QWidget):
         return (
             f"{self._reps_text()}    "
             f"{self.exercise.angle_label}: {angle}{tracked}"
+            f"{self._plane_hint()}"
         )
+
+    def _plane_hint(self):
+        """Say why repetitions cannot currently be verified."""
+        if self.analyzer.last_status != STATUS_OK:
+            return ""
+        return PLANE_HINTS.get(self.analyzer.current_plane_status, "")
 
     # -----------------------------------------------------
     # Results

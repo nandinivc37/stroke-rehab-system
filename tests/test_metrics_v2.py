@@ -109,10 +109,16 @@ def abduction(value):
 
 
 def run(samples, fps, config=FLEXION, params=PARAMS, start=0.0):
-    """samples: list of (duration_s, value or callable(t) -> results)."""
+    """samples: list of (duration_s, value or callable(t) -> results).
+
+    Every session starts with 1 s of the arm resting by the side, as the
+    patient is instructed: shoulder flexion calibrates the resting
+    upper-arm length then, and does not count repetitions whose plane it
+    could not verify (see tests/test_frontal_shoulder_flexion.py).
+    """
     analyzer = ExerciseAnalyzer(config, "LEFT", params)
     t = start
-    for duration, make in samples:
+    for duration, make in [(1.0, lambda u: flexion(10))] + list(samples):
         t0 = t
         while t - t0 < duration - 1e-9:
             analyzer.update(make(t - t0), t)

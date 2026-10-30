@@ -13,6 +13,7 @@ reviewed by a therapist before clinical use.
 import math
 
 from src.exercises.angles import (
+    CalibratedHumeralElevation,
     arm_landmarks,
     world_elbow_flexion,
     world_forward_reach,
@@ -91,13 +92,22 @@ def _target_reps(default=10):
 # Shoulder flexion (forward raise)
 # ---------------------------------------------------------
 
+# Front-facing operation. A forward raise seen from the front moves the
+# elbow mostly along the camera's depth axis, whose magnitude MediaPipe
+# estimates least reliably; CalibratedHumeralElevation therefore uses
+# the patient's resting upper-arm length and foreshortening, and MediaPipe
+# depth only for front/behind. Repetitions whose plane cannot be verified
+# are not counted (require_known_plane). A side view is not needed: it
+# hides the far shoulder, and the trunk frame would then rest on depth.
+# Not validated with a live webcam.
+
 def _flexion_reference(side, parameters):
     return synthetic_reference(
         pose_fn=lambda s, v: arm_pose(s, flexion=v),
-        angle_fn=world_humeral_elevation,
+        angle_fn=CalibratedHumeralElevation(),
         side=side,
         peak=parameters["target_range"],
-        view="side",
+        view="oblique",
     )
 
 
@@ -112,6 +122,7 @@ SHOULDER_FLEXION = ExerciseConfig(
     required_landmarks=_upper_arm_and_shoulders,
     angle_fn=world_humeral_elevation,
     reference_fn=_flexion_reference,
+    angle_fn_factory=CalibratedHumeralElevation,
     rep=_rep_config(80.0, 30.0),
     dtw=METRICS_V2_DTW,
     metrics_version=2,
@@ -120,7 +131,9 @@ SHOULDER_FLEXION = ExerciseConfig(
         start_threshold=25.0, end_threshold=20.0, end_frames=5,
         min_segment_frames=6, min_range=12.0, min_active_frames=5,
     ),
-    plane_check=PlaneCheckConfig(expected_plane=0.0, tolerance=30.0),
+    plane_check=PlaneCheckConfig(
+        expected_plane=0.0, tolerance=30.0, require_known_plane=True,
+    ),
     adaptive_parameters=(
         _target_reps(),
         AdaptiveParameter(
@@ -129,15 +142,22 @@ SHOULDER_FLEXION = ExerciseConfig(
         ),
     ),
     rep_threshold_parameter="target_range",
-    camera_view="side or 45° front-side recommended",
-    reference_view="side",
+    camera_view=(
+        "frontal: face the camera with both shoulders visible; rest the "
+        "arm by your side for a moment first"
+    ),
+    reference_view="oblique",
     instructions=(
-        "Raise the affected arm FORWARD and upward in front of the body, "
-        "keeping the trunk still, then lower it slowly."
+        "Face the camera. Start with the affected arm relaxed by your "
+        "side, raise it FORWARD and upward in front of the body, keeping "
+        "the trunk still, then lower it slowly."
     ),
     notes=(
-        "Measured as upper-arm elevation from MediaPipe 3D world "
-        "landmarks. Forward raises depend on MediaPipe's depth estimate."
+        "Upper-arm elevation from MediaPipe 3D world landmarks, corrected "
+        "for depth foreshortening with the resting upper-arm length. "
+        "MediaPipe depth is used only to tell front from behind; "
+        "repetitions whose plane cannot be verified are not counted. "
+        "Not validated with a live webcam."
     ),
 )
 

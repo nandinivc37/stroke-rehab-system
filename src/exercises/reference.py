@@ -9,6 +9,8 @@ synthetic poses, so reference and patient trajectories are measured in
 exactly the same way.
 """
 
+import math
+
 import numpy as np
 
 from src.exercises.config import ReferenceMovement
@@ -25,6 +27,9 @@ FRAME_COUNT = 30
 # Display projection (normalized widget coordinates).
 DISPLAY_SCALE = 0.6
 DISPLAY_TOP = 0.78
+# Body turned this far from the viewer in the oblique view, so a
+# forward raise is visible while the patient keeps facing the camera.
+OBLIQUE_DEGREES = 40.0
 
 
 def keyframe_values(peak, frame_count=FRAME_COUNT):
@@ -56,12 +61,18 @@ def project_for_display(points, view):
     front: mirror-style view (subject's left on the screen's left),
            matching the mirrored live camera display.
     side:  profile view, subject facing the right of the screen.
+    oblique: front view with the body turned OBLIQUE_DEGREES, so
+           forward movement shows as sideways screen movement.
     """
 
     projected = np.zeros((points.shape[0], 2), dtype=np.float32)
 
     if view == "side":
         projected[:, 0] = 0.5 - DISPLAY_SCALE * points[:, 2]
+    elif view == "oblique":
+        a = math.radians(OBLIQUE_DEGREES)
+        turned = points[:, 0] * math.cos(a) - points[:, 2] * math.sin(a)
+        projected[:, 0] = 0.5 - DISPLAY_SCALE * turned
     else:
         projected[:, 0] = 0.5 - DISPLAY_SCALE * points[:, 0]
 

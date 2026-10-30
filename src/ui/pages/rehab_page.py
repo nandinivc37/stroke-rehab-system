@@ -717,10 +717,17 @@ class RehabPage(QWidget):
             if status not in (None, "COMPLETE") else ""
         )
 
+        unverified = stats.get("plane_unverified_reps") or 0
+        plane_text = (
+            f" | {unverified} repetition(s) not counted: movement "
+            f"direction could not be verified"
+            if unverified else ""
+        )
+
         return (
             f"Session saved — {reps} | "
             f"Movement score (DTW shape + range): {score_text}{dtw_text}"
-            f"{status_text}"
+            f"{status_text}{plane_text}"
             f"{self._tracking_text(stats.get('tracking'))}"
             f"{self._compensation_text(stats.get('compensation'))}"
         )

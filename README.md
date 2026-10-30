@@ -91,7 +91,7 @@ parameters (`target_reps`, `target_range`) with bounds and step sizes.
 
 | Exercise | Measurement (MediaPipe 3D world landmarks) | Status |
 |---|---|---|
-| Shoulder Flexion | upper-arm elevation relative to trunk; reps only count in the forward plane (±30°) | implemented, offline-tested, **webcam NOT TESTED** |
+| Shoulder Flexion | upper-arm elevation relative to trunk, corrected for depth foreshortening (front-facing camera, see below); reps only count in a verified forward plane (±30°) | implemented, offline-tested, **webcam NOT TESTED** |
 | Shoulder Abduction | same angle; reps only count in the sideways plane (±30°). This is the original sideways-raise reference movement | implemented, offline-tested, **webcam NOT TESTED** |
 | Elbow Flexion | 180° − shoulder–elbow–wrist angle | implemented, offline-tested, **webcam NOT TESTED** |
 | Forward Reach | wrist displacement in front of shoulder, % of arm length (depends on MediaPipe depth) | implemented, offline-tested, **webcam NOT TESTED**; highest risk |
@@ -111,6 +111,42 @@ size and camera distance (scale-free). MediaPipe receives the
 **unmirrored** frame; only the display is mirrored. Mirroring the input
 would flip the frame's handedness and turn a forward raise into a
 backward one (`test_mirrored_input_breaks_the_flexion_plane`).
+
+**Front-facing shoulder flexion.** The patient faces the camera; no
+side view is needed. A side view hides the far shoulder (a required
+landmark), and the trunk frame's left-right axis would then come from
+estimated depth. Seen from the front, a forward raise moves the elbow
+almost only along the camera's depth axis, the least reliable part of
+MediaPipe's estimate. If that depth is compressed, the 3D upper arm looks
+shorter: elevation reads low below 90° and high above, and the plane
+drifts towards abduction. Modelled at half depth, a 70° raise read 54°
+and no repetition counted against a 60° target.
+
+`CalibratedHumeralElevation` (`src/exercises/angles.py`) handles this:
+
+* **Calibration.** It records the resting upper-arm length from about
+  5 stable frames with the arm hanging.
+* **Elevation** is `acos(down / length)`.
+* **Forward excursion** is the foreshortened component,
+  `sqrt(length² − down² − outward²)`. MediaPipe depth only tells front
+  from behind.
+* **Unchanged when depth is consistent.** When the measured 3D length
+  matches the rest length (within 5%), the result is identical to the
+  previous 3D measure.
+
+The plane is reported as unknown while calibrating, and when MediaPipe's
+depth is too small to tell front from behind (`depth_ambiguous`). With
+`require_known_plane`, such repetitions:
+
+* are not counted, and are not scored with DTW or used for peak ROM;
+* are stored in `off_plane_reps`, which also blocks progression;
+* are broken out as `plane_unverified_reps`.
+
+The live view shows the reason. The cost is a bias of up to about 6°
+(always an under-estimate) below 45° under strong compression. These
+results come from modelled depth errors only; MediaPipe's real depth
+behaviour in this situation has not been measured
+(`tests/test_frontal_shoulder_flexion.py`).
 
 The axis convention was **checked on real MediaPipe output** (2026-10-28,
 `python -m src.validation.axis_convention`, one public video of standing
@@ -574,7 +610,8 @@ preserved.
 | Sustained processing capacity (threaded pipeline, video file instead of webcam, crowded multi-person scene, i5-13420H) | complexity 0: 9.2 fps, 1: 3.7 fps, 2: 2.2 fps | pessimistic scene; live single-person rate must be measured |
 | Adaptive loop end to end (controller, approval, rejection, next attempt, range-limited patient) | automated, synthetic sessions through the real session page and database | implemented and tested; not demonstrated live |
 | Step A model comparison (Toronto, Kinect) | README section above | not re-verifiable in this copy (outputs missing) |
-| Automated tests (`pytest`, Ubuntu, Python 3.12, 2026-10-30) | 466 passed, 0 failed, 1 skipped (Step A final models not trained) | passing; synthetic inputs only |
+| Automated tests (`pytest`, Ubuntu, Python 3.12, 2026-10-30) | 518 passed, 0 failed, 1 skipped (Step A final models not trained) | passing; synthetic inputs only |
+| Front-facing shoulder flexion (depth-robust elevation, unverified-plane handling) | automated, synthetic poses with modelled depth compression, missing and wrong-signed depth | implemented and tested; **MediaPipe depth behaviour and accuracy NOT measured on webcam data** |
 | Rule-based compensation check (`geometric_rules_v1`) | automated, synthetic poses: each pattern, normal movement, restricted ROM, slow movement, jitter, occlusion, body scale, both sides, hysteresis, persistence, live widget, adaptation independence | implemented and tested; **NOT validated on webcam data or clinically**; thresholds provisional |
 | Compensation classifiers (original BiLSTM, Step A models) on MediaPipe | diagnostic: original model outputs "No Compensation" for everything; no labelled MediaPipe data exists | **NOT VALIDATED, not deployed**; Step B not started |
 | Clinical validity of any measure, threshold or rule | — | **NOT VALIDATED** |
@@ -597,6 +634,7 @@ they are not evidence of accuracy on real webcam data.
 | Progress page, dashboard | `test_progress_and_dashboard.py` |
 | Experimental posture measurements | `test_geometric_measures.py` |
 | Rule-based compensation check (detector, live widget, persistence, adaptation independence) | `test_geometric_compensation.py` |
+| Front-facing shoulder flexion: depth compression, calibration, unverified plane, counting/DTW/ROM/adaptation consistency, live hint | `test_frontal_shoulder_flexion.py` |
 | Metrics v2: DTW normalisation, fps-independent counting, glitches, gaps, peak ROM, mirrored input, per-frame log | `test_metrics_v2.py` |
 | Worker thread, unmirrored input, persistence of v2 metrics and frame logs, save failure, app close, range-limited patient loop, rejection | `test_live_pipeline_v2.py` |
 | Recommendation rules (baseline ROM, restrictions, eligibility) and therapist-edited parameters | `test_recommendation_rules.py` |
@@ -632,7 +670,10 @@ before analysis).
   clinically validated; therapist review is required.
 * **Reference movements are synthetic**, not clinician recordings.
 * **Forward reach and trunk-related measures depend on MediaPipe depth**,
-  which is noisy.
+  which is noisy. Shoulder flexion is corrected for depth compression
+  but still needs the sign of MediaPipe depth and a resting arm at the
+  start of each session. Repetitions whose direction cannot be
+  verified are not counted.
 * <a id="frame-rate"></a>**Frame rate is the current release blocker.**
   * MediaPipe inference dominates the per-frame cost. Analysis and
     drawing take about 7 ms. Moving capture and inference to a worker

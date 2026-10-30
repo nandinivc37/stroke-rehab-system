@@ -226,6 +226,173 @@ def humeral_elevation(points, side, use_hips=True):
 
 
 # ---------------------------------------------------------
+# Depth-robust humeral elevation (front-facing camera)
+# ---------------------------------------------------------
+
+# AngleReading.plane_status values.
+PLANE_OK = "ok"
+PLANE_NEAR_VERTICAL = "arm_near_vertical"
+PLANE_CALIBRATING = "calibrating"
+PLANE_DEPTH_AMBIGUOUS = "depth_ambiguous"
+# Plane unknown for a reason other than the arm being near vertical:
+# the movement direction could not be verified.
+PLANE_UNVERIFIED = (PLANE_CALIBRATING, PLANE_DEPTH_AMBIGUOUS)
+
+PLANE_MIN_HORIZONTAL = math.sin(math.radians(15.0))
+
+
+def calibrated_humeral_elevation(points, side, rest_length, use_hips=True,
+                                 length_tolerance=0.05,
+                                 min_depth_agreement=0.25):
+    """
+    Humeral elevation that does not trust MediaPipe's depth MAGNITUDE.
+
+    With the patient facing the camera, a forward raise moves the elbow
+    almost only along the camera's depth axis. If the estimated depth
+    is compressed, the measured shoulder->elbow vector is shorter than
+    the real upper arm, elevation is under-estimated below 90° (and
+    over-estimated above) and the plane drifts towards abduction.
+
+    The upper arm is rigid, so its length is taken from the patient's
+    own resting arm (rest_length; hanging arm, nearly parallel to the
+    image). Elevation is then acos(down / length) and the forward
+    excursion is the out-of-image component implied by foreshortening,
+    sqrt(length^2 - down^2 - outward^2). MediaPipe depth is used only for
+    the SIGN of that excursion (in front of / behind the body), and only
+    when it agrees well enough to be trusted.
+
+    When the measured 3D length is not shorter than
+    rest_length * (1 - length_tolerance) the result is identical to
+    humeral_elevation(); the tolerance keeps landmark jitter on a hanging
+    arm from appearing as elevation.
+
+    Returns (elevation, plane, plane_status) or None if degenerate.
+    """
+
+    frame = trunk_frame(points, use_hips)
+
+    if frame is None:
+        return None
+
+    lateral, up, forward = frame
+    shoulder, elbow, _ = arm_landmarks(side)
+
+    arm = points[elbow] - points[shoulder]
+    measured = float(np.linalg.norm(arm))
+    # An arm pointing straight at the camera with no depth estimate has
+    # the elbow on top of the shoulder: still 90 deg by foreshortening.
+    length = max(measured, rest_length * (1.0 - length_tolerance))
+
+    if length < 1e-6:
+        return None
+
+    outward_axis = lateral if side.upper() == "LEFT" else -lateral
+    down = -float(arm @ up)
+    outward = float(arm @ outward_axis)
+    depth_reported = float(arm @ forward)
+
+    elevation = math.degrees(math.acos(max(-1.0, min(1.0, down / length))))
+
+    depth = math.sqrt(max(0.0, length ** 2 - down ** 2 - outward ** 2))
+
+    if math.hypot(outward, depth) <= PLANE_MIN_HORIZONTAL * length:
+        return elevation, None, PLANE_NEAR_VERTICAL
+
+    if (
+        depth > PLANE_MIN_HORIZONTAL * length
+        and abs(depth_reported) < min_depth_agreement * depth
+    ):
+        # Foreshortening says the arm points clearly out of the image
+        # plane, but MediaPipe's depth is too small to tell whether it
+        # is in front of or behind the body.
+        return elevation, None, PLANE_DEPTH_AMBIGUOUS
+
+    if depth_reported < 0:
+        depth = -depth
+
+    return elevation, math.degrees(math.atan2(outward, depth)), PLANE_OK
+
+
+class CalibratedHumeralElevation:
+    """
+    Stateful per-session measurement for front-facing shoulder flexion.
+
+    Until a stable resting upper-arm length has been observed (arm
+    hanging, rest_frames consecutive frames whose lengths vary by at
+    most rest_stability of their median; 5 frames is about 0.17 s at
+    30 fps and 0.7 s at 7 fps) readings carry the uncalibrated
+    3D elevation with plane None and plane_status "calibrating", so the
+    movement plane counts as unverified rather than as valid flexion.
+
+    Thresholds are engineering defaults; not clinically validated.
+    """
+
+    def __init__(self, rest_frames=5, rest_elevation=30.0,
+                 rest_stability=0.10, length_tolerance=0.05,
+                 min_depth_agreement=0.25):
+        self.rest_frames = rest_frames
+        self.rest_elevation = rest_elevation
+        self.rest_stability = rest_stability
+        self.length_tolerance = length_tolerance
+        self.min_depth_agreement = min_depth_agreement
+        self.reset()
+
+    def reset(self):
+        self.rest_length = None
+        self._rest_samples = []
+
+    def _observe(self, points, side, elevation):
+        if elevation > self.rest_elevation:
+            self._rest_samples = []
+            return
+
+        shoulder, elbow, _ = arm_landmarks(side)
+        self._rest_samples.append(
+            float(np.linalg.norm(points[elbow] - points[shoulder]))
+        )
+        self._rest_samples = self._rest_samples[-self.rest_frames:]
+
+        if len(self._rest_samples) < self.rest_frames:
+            return
+
+        middle = float(np.median(self._rest_samples))
+        spread = max(self._rest_samples) - min(self._rest_samples)
+        if middle > 1e-6 and spread <= self.rest_stability * middle:
+            self.rest_length = middle
+
+    def __call__(self, results, side):
+        points = world_array(results)
+
+        if points is None:
+            return None
+
+        use_hips = hips_visible(results)
+        reference_frame = "hips" if use_hips else "camera"
+
+        if self.rest_length is None:
+            measurement = humeral_elevation(points, side, use_hips)
+            if measurement is None:
+                return None
+            self._observe(points, side, measurement[0])
+            if self.rest_length is None:
+                return AngleReading(
+                    measurement[0], None, reference_frame,
+                    PLANE_CALIBRATING,
+                )
+
+        measurement = calibrated_humeral_elevation(
+            points, side, self.rest_length, use_hips,
+            self.length_tolerance, self.min_depth_agreement,
+        )
+
+        if measurement is None:
+            return None
+
+        elevation, plane, status = measurement
+        return AngleReading(elevation, plane, reference_frame, status)
+
+
+# ---------------------------------------------------------
 # World-landmark measurements used by exercise configs
 # ---------------------------------------------------------
 
