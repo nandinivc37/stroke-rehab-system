@@ -148,6 +148,169 @@ results come from modelled depth errors only; MediaPipe's real depth
 behaviour in this situation has not been measured
 (`tests/test_frontal_shoulder_flexion.py`).
 
+**Shoulder flexion: open issue — close-range front-facing recognition
+is unresolved.** Repetition acceptance uses the movement plane from
+MediaPipe *world* landmarks, exactly as in commit `7ee51f7`
+(0° ± 30°, `require_known_plane`). The repetition state machine is
+unchanged.
+
+What happened:
+* **Sessions 56–58 (2026-10-31, target 60°).** 12–14 repetitions were
+  completed per session, but almost all were rejected as off-plane: the
+  world plane sat at 60–80° (0° forward, 90° sideways).
+* **Image-based plane, then a pinhole-camera version.** Both were tried
+  as the plane *decision*.
+* **Replay of a 26-minute recording (2026-11-01).** The pinhole version
+  rejected 12 repetitions that `7ee51f7` accepted (5 counted against
+  15). This happened when the trunk was turned away from the camera, or
+  when the image and world landmarks disagreed about the elevation
+  itself.
+* **Decision restored.** The world plane decides again; the replay
+  matches `7ee51f7` exactly (15 counted, 12 off-plane, 0 unverified,
+  14 interrupted).
+
+The image-based plane (pinhole model, `REHAB_CAMERA_HFOV`, default 65°)
+is still computed, but **for diagnostics only**: overlay, landmark
+recordings and `flexion_trace`.
+
+Why front-facing flexion at close range is still open:
+* With the patient about 0.6 m from the camera, perspective makes a
+  forward-moving elbow slide outward in the image.
+* Close to the camera, a sideways arm can produce the same image as an
+  arm in front of the body.
+* MediaPipe's world depth is compressed.
+
+This will be investigated separately with fresh live recordings (checklist
+items 2.11 and 2.12) before any further change to the decision.
+
+Every completed repetition records why it was or was not counted
+(`rep_events`). The live view announces a rejected repetition with its
+measured plane.
+
+**Temporary diagnostics:**
+
+* `REHAB_DEBUG_OVERLAY=1` shows the decision state under the video:
+  * elevation, target and lowering threshold;
+  * the plane used for the decision (world) and, for comparison, the
+    image-based plane and estimated camera distance; the expected plane
+    and the check result;
+  * segmentation and repetition state, and the reason a repetition is
+    not counted.
+* `REHAB_RECORD_LANDMARKS=<file.jsonl>` records every frame's
+  landmarks. Replay a recording with
+  `python -m src.validation.flexion_trace <file.jsonl>`.
+* `REHAB_CAMERA_HFOV=<degrees>` sets the assumed horizontal field of
+  view for the diagnostic image plane (default 65).
+
+Recordings contain body landmarks (no images); treat them as patient data.
+Angle accuracy has not been measured.
+
+**Live-pipeline reliability (2026-11-01).** Six recorded live flexion
+sessions (`flexion.jsonl`, about 42 minutes of real MediaPipe output; not
+in the repository) were replayed through the analyzer and the
+compensation detector. Confirmed problems and corrections:
+
+* **Repetitions lost to brief pose dropouts.** MediaPipe lost the whole
+  pose for 1.1–2.5 s mid-raise; the 1 s gap rule abandoned the repetition
+  even though the arm was still raised on return. Shoulder flexion now
+  bridges a dropout of up to 3 s when the arm is still at or above the
+  30° lowering threshold on return
+  (`RepCountingConfig.max_bridged_gap_s`). A repetition is still counted
+  only once the lowering is observed.
+* **Attempt signal stuck on.** `movement_active` stayed on through
+  tracking loss (up to 419 s). It also stayed on while a seated resting
+  arm read 21–25° relative to the hip–shoulder trunk line, above the 20°
+  end threshold. For shoulder flexion an attempt now ends after 3 s
+  without measurement (not scored), or after 1 s still below the 25° start
+  threshold (`SegmentationConfig.max_gap_s`, `rest_end_s`; time-based).
+* **Compensation scored on impossible poses.** Trunk estimates more than
+  60° from vertical, or deviations beyond a per-pattern plausible limit
+  (45°, 45°, 0.5 shoulder widths), are now `unable_to_assess` with a
+  reason, never "detected". Recordings had trunk "lean" of 150–179°.
+* **Compensation baseline starved and stale.** The baseline is now
+  re-established at every stable rest, and only while the exercise arm
+  is measured and not in an attempt. Its samples restart when an attempt
+  begins.
+
+Other exercises keep their configuration. Compensation uses only the
+attempt signal (angle-based segmentation), never repetition counting or
+plane validation, and it is never used for adaptation.
+
+**Audit follow-up (2026-11-01):**
+* **Stillness and tracking loss.** Stillness restarts when measured
+  frames are more than 0.5 s apart, so time without tracking never counts
+  as rest.
+* **Stable reasons.** "Unable to assess" reasons are fixed categories;
+  the measured values are only in the per-frame diagnostics.
+* **Camera failure.** When the camera stops delivering frames, the
+  posture line shows "unable to assess — camera not delivering frames"
+  instead of the last verdict.
+* **Two compensation references.** Each pattern keeps:
+  * a **current resting baseline**, refreshed at every stable rest. The
+    live verdict, `episodes`, `detected_fraction` and
+    `max_abs_deviation` are relative to it, so these existing fields keep
+    their meaning;
+  * an immutable **session-start baseline**, the first stable rest of
+    the session. The new summary fields `session_start_baseline`,
+    `rest_drift`, `max_abs_rest_drift` and `session_start` (maximum,
+    95th percentile, fraction of assessed frames beyond the threshold)
+    are relative to it.
+
+  A patient leaning gradually further between attempts therefore still
+  shows that change in the session record. The session-start posture is
+  only where the session began, not an ideal or validated posture.
+  Recordings showed resting-posture drift of up to 24° within a session.
+  Sessions saved earlier lack these fields and display as before.
+* **Measurement versions.** Shoulder flexion is now `metrics_version` 3;
+  the other exercises stay at 2. Each session stores its exercise's
+  version; previously every session stored 2 regardless.
+  * The adaptive policy compares only sessions of the exercise's current
+    version. Older shoulder-flexion sessions are excluded with the reason
+    "version 2; this exercise now uses version 3; not comparable". At
+    least two version-3 sessions at the current parameters are needed
+    before any change is proposed.
+  * Progress history charts version-3 sessions as a separate group.
+  * No database migration was needed; stored rows are unchanged.
+
+**Final review (2026-11-01):**
+* **Warning hold.** Only ordinary visibility loss ("no pose detected",
+  "shoulders/hips not visible") keeps an ongoing compensation warning on
+  screen, for up to 3 frames. Those frames are stored as
+  `frames_held_through_dropout`; they are not "detected" frames and are
+  excluded from `detected_fraction` (numerator and denominator). The
+  `frames` layout is unchanged.
+* **Implausible frames end the warning.** A geometrically implausible
+  measurement is `unable_to_assess`. If the lean continues afterwards it
+  starts a new episode, so episode counts can rise where pose estimation
+  glitches.
+* **Reference labels.** Summaries and Progress history label each figure
+  "vs current resting posture" or "vs session-start resting posture",
+  and add: "Both references are this patient's own resting postures
+  during the session, not ideal or clinically validated postures."
+  Sessions saved before the dual reference say "vs resting posture" with
+  a single-reference note.
+* **Version explanation.** When an exercise's older-version sessions
+  are set aside, the patient feedback and the adaptation rationale say
+  so, and give the number of comparable sessions still needed, computed
+  from the policy window. A version mismatch on the attempt itself no
+  longer gives lighting or framing advice; tracking-quality failures
+  still do.
+
+Recorded-data replay (same six sessions):
+* Repetitions counted: 26 → 29; interrupted 21 → 10; plane decisions
+  unchanged.
+* Trunk-lean detections no longer include impossible values.
+
+Not found, despite checks:
+* coordinate-axis, mirroring or affected-side errors;
+* frame-rate-dependent thresholds in the corrected rules;
+* hips frequently out of frame while reported visible (≤ 8% of frames).
+
+Still open: the 60–80° world planes during raises described as forward
+flexion. At about 0.9 m, the 2D pixels themselves show the arm out to
+the side. Whether that is the movement performed or a camera-placement
+effect needs a side-view video alongside a recording.
+
 The axis convention was **checked on real MediaPipe output** (2026-10-28,
 `python -m src.validation.axis_convention`, one public video of standing
 people, 40 usable frames). In frames of people facing the camera:
@@ -610,7 +773,7 @@ preserved.
 | Sustained processing capacity (threaded pipeline, video file instead of webcam, crowded multi-person scene, i5-13420H) | complexity 0: 9.2 fps, 1: 3.7 fps, 2: 2.2 fps | pessimistic scene; live single-person rate must be measured |
 | Adaptive loop end to end (controller, approval, rejection, next attempt, range-limited patient) | automated, synthetic sessions through the real session page and database | implemented and tested; not demonstrated live |
 | Step A model comparison (Toronto, Kinect) | README section above | not re-verifiable in this copy (outputs missing) |
-| Automated tests (`pytest`, Ubuntu, Python 3.12, 2026-10-30) | 518 passed, 0 failed, 1 skipped (Step A final models not trained) | passing; synthetic inputs only |
+| Automated tests (`pytest`, Ubuntu, Python 3.12, 2026-11-01) | 613 passed, 0 failed, 1 skipped (Step A final models not trained) | passing; synthetic inputs only |
 | Front-facing shoulder flexion (depth-robust elevation, unverified-plane handling) | automated, synthetic poses with modelled depth compression, missing and wrong-signed depth | implemented and tested; **MediaPipe depth behaviour and accuracy NOT measured on webcam data** |
 | Rule-based compensation check (`geometric_rules_v1`) | automated, synthetic poses: each pattern, normal movement, restricted ROM, slow movement, jitter, occlusion, body scale, both sides, hysteresis, persistence, live widget, adaptation independence | implemented and tested; **NOT validated on webcam data or clinically**; thresholds provisional |
 | Compensation classifiers (original BiLSTM, Step A models) on MediaPipe | diagnostic: original model outputs "No Compensation" for everything; no labelled MediaPipe data exists | **NOT VALIDATED, not deployed**; Step B not started |
@@ -635,6 +798,7 @@ they are not evidence of accuracy on real webcam data.
 | Experimental posture measurements | `test_geometric_measures.py` |
 | Rule-based compensation check (detector, live widget, persistence, adaptation independence) | `test_geometric_compensation.py` |
 | Front-facing shoulder flexion: depth compression, calibration, unverified plane, counting/DTW/ROM/adaptation consistency, live hint | `test_frontal_shoulder_flexion.py` |
+| Flexion repetition decisions: image-based plane, rejection reasons, debug overlay, landmark recorder and replay | `test_flexion_rep_diagnostics.py` |
 | Metrics v2: DTW normalisation, fps-independent counting, glitches, gaps, peak ROM, mirrored input, per-frame log | `test_metrics_v2.py` |
 | Worker thread, unmirrored input, persistence of v2 metrics and frame logs, save failure, app close, range-limited patient loop, rejection | `test_live_pipeline_v2.py` |
 | Recommendation rules (baseline ROM, restrictions, eligibility) and therapist-edited parameters | `test_recommendation_rules.py` |

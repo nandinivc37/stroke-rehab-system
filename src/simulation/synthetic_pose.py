@@ -37,7 +37,9 @@ RIGHT_HIP = 24
 UPPER_ARM_LENGTH = 0.30
 FOREARM_LENGTH = 0.25
 
-# Orthographic projection scale from metres to normalized image units.
+# Image scale (normalized units per metre) at the hip-depth plane. Synthetic
+# images use a pinhole camera (project_perspective) matching
+# project_to_image() at that depth.
 IMAGE_SCALE = 0.6
 IMAGE_CENTER = (0.5, 0.75)
 
@@ -210,6 +212,38 @@ def project_to_image(points):
     return image
 
 
+def project_perspective(points, horizontal_fov=None, distance=None,
+                        camera=None, aspect=1.0):
+    """
+    Pinhole projection of world points to normalized image coordinates
+    (x by the image width, y by the height; aspect = width / height),
+    principal point at the image centre.
+
+    distance: camera to the hip-depth plane (z = 0) in metres; camera:
+    (x, y) world position of the optical axis. The defaults place the
+    camera so that points at z = 0 land exactly where project_to_image()
+    puts them. Points nearer the camera are magnified and move away from
+    the image centre, as with a real webcam.
+    """
+
+    if horizontal_fov is None:
+        from src.exercises.angles import CAMERA_HORIZONTAL_FOV
+        horizontal_fov = CAMERA_HORIZONTAL_FOV
+    focal = 0.5 / math.tan(math.radians(horizontal_fov) / 2.0)
+    if distance is None:
+        distance = focal / IMAGE_SCALE
+    if camera is None:
+        camera = (-(IMAGE_CENTER[0] - 0.5) / IMAGE_SCALE,
+                  -(IMAGE_CENTER[1] - 0.5) / IMAGE_SCALE)
+    depth = distance + points[:, 2]
+
+    image = np.empty_like(points)
+    image[:, 0] = 0.5 + focal * (points[:, 0] - camera[0]) / depth
+    image[:, 1] = 0.5 + focal * aspect * (points[:, 1] - camera[1]) / depth
+    image[:, 2] = IMAGE_SCALE * points[:, 2]
+    return image
+
+
 class SyntheticResults:
     """Mimics the attributes of mediapipe Pose.process() results."""
 
@@ -226,13 +260,13 @@ def make_results(pose=None, visibility_overrides=None, image_points=None):
         pose: BodyPose (default neutral seated pose)
         visibility_overrides: {landmark_index: visibility}
         image_points: optional (33, 3) normalized image coordinates
-            overriding the orthographic projection (used by legacy
+            overriding the default pinhole projection (used by legacy
             2D characterization tests).
     """
 
     pose = pose or BodyPose()
     world = world_points(pose)
-    image = project_to_image(world) if image_points is None else image_points
+    image = project_perspective(world) if image_points is None else image_points
 
     overrides = visibility_overrides or {}
 

@@ -18,6 +18,7 @@ It has NOT been verified with a live webcam.
 """
 
 import math
+import os
 
 import numpy as np
 
@@ -241,11 +242,33 @@ PLANE_UNVERIFIED = (PLANE_CALIBRATING, PLANE_DEPTH_AMBIGUOUS)
 PLANE_MIN_HORIZONTAL = math.sin(math.radians(15.0))
 
 
+# Assumed horizontal field of view of the webcam (degrees) for the
+# perspective model of the DIAGNOSTIC image-based plane. Typical webcams are
+# 60-70°; not measured for any particular camera. Set REHAB_CAMERA_HFOV
+# to the camera's actual value (see docs/webcam_validation_checklist.md).
+CAMERA_HFOV_ENV = "REHAB_CAMERA_HFOV"
+DEFAULT_CAMERA_HORIZONTAL_FOV = 65.0
+
+
+def _camera_horizontal_fov():
+    try:
+        value = float(os.environ.get(CAMERA_HFOV_ENV, ""))
+    except ValueError:
+        return DEFAULT_CAMERA_HORIZONTAL_FOV
+    return value if 20.0 <= value <= 150.0 else DEFAULT_CAMERA_HORIZONTAL_FOV
+
+
+CAMERA_HORIZONTAL_FOV = _camera_horizontal_fov()
+
+
 def calibrated_humeral_elevation(points, side, rest_length, use_hips=True,
                                  length_tolerance=0.05,
-                                 min_depth_agreement=0.25):
+                                 min_depth_agreement=0.25,
+                                 image=None, image_aspect=1.0,
+                                 horizontal_fov=CAMERA_HORIZONTAL_FOV):
     """
-    Humeral elevation that does not trust MediaPipe's depth MAGNITUDE.
+    Humeral elevation and plane for a front-facing camera that do not
+    trust MediaPipe's depth MAGNITUDE.
 
     With the patient facing the camera, a forward raise moves the elbow
     almost only along the camera's depth axis. If the estimated depth
@@ -261,12 +284,31 @@ def calibrated_humeral_elevation(points, side, rest_length, use_hips=True,
     the SIGN of that excursion (in front of / behind the body), and only
     when it agrees well enough to be trusted.
 
-    When the measured 3D length is not shorter than
-    rest_length * (1 - length_tolerance) the result is identical to
-    humeral_elevation(); the tolerance keeps landmark jitter on a hanging
-    arm from appearing as elevation.
+    Plane: from the same world vector, exactly as in commit 7ee51f7
+    (outward component, forward excursion signed by MediaPipe depth).
 
-    Returns (elevation, plane, plane_status) or None if degenerate.
+    Diagnostic only: with image landmarks (image: (33, 2) coordinates in
+    units of the image height, x scaled by image_aspect = width / height)
+    a second plane is computed from the 2D image with a pinhole camera
+    model (_image_plane_components) and reported in details. It does NOT
+    decide the plane: on a 26-minute recording (2026-11-01) it rejected
+    12 repetitions the world plane accepted, when the trunk was turned
+    away from the camera or the image and world landmarks disagreed
+    about the elevation itself. Close-range front-facing flexion remains
+    unresolved (README, "Shoulder flexion: open issue").
+
+    When the measured length is not shorter than
+    rest_length * (1 - length_tolerance), the result is identical to
+    humeral_elevation(); the tolerance keeps
+    landmark jitter on a hanging arm from appearing as elevation.
+
+    Returns (elevation, plane, plane_status, details) or None if
+    degenerate. details: world_plane (None when near vertical),
+    plane_source ("world": the source of the returned plane),
+    depth_agreement (world); diagnostic only: image_plane,
+    image_plane_status, image_depth_agreement (see _choose_root),
+    camera_distance (shoulder to camera in MediaPipe world units under
+    the assumed field of view), None if unavailable.
     """
 
     frame = trunk_frame(points, use_hips)
@@ -295,8 +337,36 @@ def calibrated_humeral_elevation(points, side, rest_length, use_hips=True,
 
     depth = math.sqrt(max(0.0, length ** 2 - down ** 2 - outward ** 2))
 
+    details = {
+        "world_plane": None,
+        "image_plane": None,
+        "image_plane_status": None,
+        "plane_source": "world",
+        "depth_agreement": (
+            abs(depth_reported) / depth if depth > 1e-9 else None
+        ),
+        "image_depth_agreement": None,
+        "camera_distance": None,
+    }
+
+    # Diagnostic only: the plane from the image landmarks (pinhole
+    # model). It never decides the plane returned below.
+    if image is not None:
+        image_reading = _image_plane_components(
+            image, points, side, rest_length, use_hips, image_aspect,
+            horizontal_fov)
+        if image_reading is not None:
+            candidates, scale, details["camera_distance"] = image_reading
+            (details["image_plane"], details["image_plane_status"],
+             details["image_depth_agreement"]) = _choose_root(
+                candidates, scale, depth_reported, min_depth_agreement)
+
+    # Decision: world landmarks, exactly as in commit 7ee51f7.
     if math.hypot(outward, depth) <= PLANE_MIN_HORIZONTAL * length:
-        return elevation, None, PLANE_NEAR_VERTICAL
+        return elevation, None, PLANE_NEAR_VERTICAL, details
+
+    details["world_plane"] = math.degrees(math.atan2(
+        outward, -depth if depth_reported < 0 else depth))
 
     if (
         depth > PLANE_MIN_HORIZONTAL * length
@@ -305,12 +375,177 @@ def calibrated_humeral_elevation(points, side, rest_length, use_hips=True,
         # Foreshortening says the arm points clearly out of the image
         # plane, but MediaPipe's depth is too small to tell whether it
         # is in front of or behind the body.
-        return elevation, None, PLANE_DEPTH_AMBIGUOUS
+        return elevation, None, PLANE_DEPTH_AMBIGUOUS, details
 
-    if depth_reported < 0:
-        depth = -depth
+    return elevation, details["world_plane"], PLANE_OK, details
 
-    return elevation, math.degrees(math.atan2(outward, depth)), PLANE_OK
+
+def _choose_root(candidates, length, depth_reported, min_depth_agreement):
+    """
+    DIAGNOSTIC ONLY (image plane; never decides the returned plane).
+
+    Plane from the two arm directions consistent with the image,
+    ((outward, forward) nearer the camera, (outward, forward) farther;
+    forward positive towards the camera), chosen with MediaPipe's
+    reported forward component (depth_reported).
+
+    MediaPipe depth is trusted for its sign and to within a compression
+    factor of min_depth_agreement, not for its magnitude. The nearer
+    direction (forward f_near) is supported when the reported depth is
+    at least min(m * f_near, f_near); the farther (f_far) when it is at
+    most max(m * f_far, f_far) (m = min_depth_agreement). So a direction
+    behind the body needs a reported depth clearly behind it, and one in
+    front of the body but nearer the frontal plane than the other is
+    supported by anything up to its own depth. Exactly one supported
+    direction is used; otherwise, if the two differ clearly (half their
+    forward separation above sin 15° of the length), the plane is
+    ambiguous. For an orthographic view the two are (outward, ±depth)
+    and this is the sign of the reported depth, ambiguous when
+    |reported| < m * depth.
+
+    Returns (plane or None if near vertical, plane_status, agreement),
+    agreement = reported depth relative to the two directions: 0 at the
+    farther, 1 at the nearer (None if they coincide).
+    """
+
+    (near_out, near_fwd), (far_out, far_fwd) = candidates
+    half = (near_fwd - far_fwd) / 2.0
+    slack = 1e-3 * length  # numerical only (float32 landmarks)
+    near_ok = depth_reported >= min(min_depth_agreement * near_fwd,
+                                    near_fwd) - slack
+    far_ok = depth_reported <= max(min_depth_agreement * far_fwd,
+                                   far_fwd) + slack
+    agreement = None
+    if half > 1e-9:
+        agreement = (depth_reported - far_fwd) / (2.0 * half)
+
+    if near_ok != far_ok:
+        use_near = near_ok
+    else:
+        use_near = (abs(depth_reported - near_fwd)
+                    <= abs(depth_reported - far_fwd))
+    outward, forward = (
+        (near_out, near_fwd) if use_near else (far_out, far_fwd)
+    )
+
+    if math.hypot(outward, forward) <= PLANE_MIN_HORIZONTAL * length:
+        return None, PLANE_NEAR_VERTICAL, agreement
+
+    plane = math.degrees(math.atan2(outward, forward))
+    if near_ok == far_ok and half > PLANE_MIN_HORIZONTAL * length:
+        # The image is consistent with two clearly different arm
+        # directions (e.g. in front of / behind the body) and MediaPipe's
+        # depth does not support exactly one of them.
+        return plane, PLANE_DEPTH_AMBIGUOUS, agreement
+
+    return plane, PLANE_OK, agreement
+
+
+def _image_plane_components(image, points, side, rest_length, use_hips,
+                            aspect=1.0,
+                            horizontal_fov=CAMERA_HORIZONTAL_FOV):
+    """
+    The two upper-arm directions consistent with the image elbow, as
+    ((outward, forward) nearer the camera, (outward, forward) farther),
+    with the arm length and the shoulder-to-camera distance:
+    (candidates, length, distance), or None if degenerate. The trunk
+    frame's lateral and up axes lie in the image (shoulder line;
+    perpendicular to it, checked against hips->shoulders); forward is
+    towards the camera. Lengths are in world units (rest_length =
+    calibrated resting upper arm).
+
+    Pinhole camera with the principal point at the image centre and the
+    given horizontal field of view. The image scale at the shoulders
+    (image units per world unit) is measured EVERY frame from the image
+    shoulder width over the in-image (x, y) world shoulder width, so it
+    follows the patient leaning towards or away from the camera. The
+    elbow lies on its camera ray at rest_length from the shoulder: two
+    solutions. If the ray misses that sphere, the image elbow is farther
+    out than the arm can reach and the single closest point is used
+    (arm across the ray, i.e. close to the frontal plane).
+
+    Why perspective matters: live recordings (2026-11-01) had the
+    shoulders about 0.6 m from the camera and the patient leaning in
+    during the raise (image shoulder width +31%). A forward-moving elbow
+    then slides AWAY from the image centre, i.e. outward for a shoulder
+    off the optical axis, and grows. The previous orthographic model
+    with a fixed image rest length read that as an arm lying in the
+    frontal plane (forward component clamped to 0, plane exactly 90°).
+    Close to the camera the second solution of a sideways arm can also
+    lie in front of the body, so the choice uses MediaPipe's depth
+    (_choose_root) and may be ambiguous.
+
+    horizontal_fov=None: orthographic (same per-frame scale); the two
+    solutions are then mirror images in front of / behind the body.
+    """
+
+    shoulder, elbow, _ = arm_landmarks(side)
+
+    lateral = image[LEFT_SHOULDER] - image[RIGHT_SHOULDER]
+    lateral_norm = np.linalg.norm(lateral)
+    world_width = math.hypot(*(points[LEFT_SHOULDER]
+                               - points[RIGHT_SHOULDER])[:2])
+    if lateral_norm < 1e-9 or world_width < 1e-9 or rest_length < 1e-9:
+        return None
+    scale = lateral_norm / world_width
+    lateral = lateral / lateral_norm
+
+    # Perpendicular to the shoulder line, pointing up the image (y down).
+    up = np.array([lateral[1], -lateral[0]])
+    if up[1] > 0:
+        up = -up
+    if use_hips:
+        trunk = (
+            (image[LEFT_SHOULDER] + image[RIGHT_SHOULDER])
+            - (image[LEFT_HIP] + image[RIGHT_HIP])
+        ) / 2.0
+        if trunk @ up <= 0:
+            return None
+
+    outward_axis = lateral if side.upper() == "LEFT" else -lateral
+
+    if horizontal_fov is None:
+        arm = (image[elbow] - image[shoulder]) / scale
+        length = max(float(np.linalg.norm(arm)), rest_length)
+        down = -float(arm @ up)
+        outward = float(arm @ outward_axis)
+        depth = math.sqrt(max(0.0, length ** 2 - down ** 2 - outward ** 2))
+        return ((outward, depth), (outward, -depth)), length, None
+
+    # Camera coordinates: x right, y down (image units / focal), z away.
+    focal = (aspect / 2.0) / math.tan(math.radians(horizontal_fov) / 2.0)
+    centre = np.array([aspect / 2.0, 0.5])
+    distance = focal / scale
+    shoulder_3d = np.append((image[shoulder] - centre) / scale, distance)
+    ray = np.append((image[elbow] - centre) / focal, 1.0)
+    # |t * ray - shoulder_3d| = rest_length
+    a = float(ray @ ray)
+    b = float(ray @ shoulder_3d)
+    root = math.sqrt(max(0.0, b * b - a * (shoulder_3d @ shoulder_3d
+                                           - rest_length ** 2)))
+    candidates = []
+    for t in ((b - root) / a, (b + root) / a):
+        arm = t * ray - shoulder_3d
+        candidates.append((float(arm[:2] @ outward_axis), -float(arm[2])))
+    length = max(rest_length, float(np.linalg.norm(b / a * ray
+                                                   - shoulder_3d)))
+    return tuple(candidates), length, distance
+
+
+def image_array(results, aspect=1.0):
+    """(33, 2) image landmarks in units of the image height (x scaled by
+    width / height), or None if unavailable."""
+
+    landmarks = getattr(results, "pose_landmarks", None)
+    if landmarks is None:
+        return None
+    points = np.array(
+        [[lm.x * aspect, lm.y] for lm in landmarks.landmark],
+        dtype=np.float64,
+    )
+    if points.shape != (33, 2) or not np.all(np.isfinite(points)):
+        return None
+    return points
 
 
 class CalibratedHumeralElevation:
@@ -319,27 +554,42 @@ class CalibratedHumeralElevation:
 
     Until a stable resting upper-arm length has been observed (arm
     hanging, rest_frames consecutive frames whose lengths vary by at
-    most rest_stability of their median; 5 frames is about 0.17 s at
-    30 fps and 0.7 s at 7 fps) readings carry the uncalibrated
+    most rest_stability of their median; 5 frames is about
+    0.17 s at 30 fps and 0.7 s at 7 fps) readings carry the uncalibrated
     3D elevation with plane None and plane_status "calibrating", so the
     movement plane counts as unverified rather than as valid flexion.
+
+    set_image_size() must be called with the processed frame size for
+    the image-based plane to be geometrically correct (x and y of
+    MediaPipe image landmarks are normalised by different dimensions);
+    the default aspect of 1.0 suits synthetic poses. horizontal_fov is
+    the assumed camera field of view (None = orthographic, as in the
+    synthetic poses). last_details holds the latest frame's diagnostics
+    (see calibrated_humeral_elevation).
 
     Thresholds are engineering defaults; not clinically validated.
     """
 
     def __init__(self, rest_frames=5, rest_elevation=30.0,
                  rest_stability=0.10, length_tolerance=0.05,
-                 min_depth_agreement=0.25):
+                 min_depth_agreement=0.25,
+                 horizontal_fov=CAMERA_HORIZONTAL_FOV):
         self.rest_frames = rest_frames
         self.rest_elevation = rest_elevation
         self.rest_stability = rest_stability
         self.length_tolerance = length_tolerance
         self.min_depth_agreement = min_depth_agreement
+        self.horizontal_fov = horizontal_fov
+        self.image_aspect = 1.0
         self.reset()
 
     def reset(self):
         self.rest_length = None
         self._rest_samples = []
+        self.last_details = None
+
+    def set_image_size(self, width, height):
+        self.image_aspect = width / height if width and height else 1.0
 
     def _observe(self, points, side, elevation):
         if elevation > self.rest_elevation:
@@ -366,11 +616,13 @@ class CalibratedHumeralElevation:
         if points is None:
             return None
 
+        image = image_array(results, self.image_aspect)
         use_hips = hips_visible(results)
         reference_frame = "hips" if use_hips else "camera"
 
         if self.rest_length is None:
             measurement = humeral_elevation(points, side, use_hips)
+            self.last_details = None
             if measurement is None:
                 return None
             self._observe(points, side, measurement[0])
@@ -383,12 +635,14 @@ class CalibratedHumeralElevation:
         measurement = calibrated_humeral_elevation(
             points, side, self.rest_length, use_hips,
             self.length_tolerance, self.min_depth_agreement,
+            image, self.image_aspect, self.horizontal_fov,
         )
 
         if measurement is None:
+            self.last_details = None
             return None
 
-        elevation, plane, status = measurement
+        elevation, plane, status, self.last_details = measurement
         return AngleReading(elevation, plane, reference_frame, status)
 
 

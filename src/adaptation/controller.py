@@ -54,6 +54,7 @@ from src.adaptation.policy import (
     PolicyConfig,
     evaluate,
     session_quality_issue,
+    version_mismatch,
 )
 
 logger = logging.getLogger(__name__)
@@ -371,10 +372,11 @@ def decide(exercise, current_parameters, attempt, history,
     current = exercise.resolve_parameters(current_parameters)
     compensation_info = describe_compensation(compensation)
 
-    def unable(reason, policy_inputs=None):
+    def unable(reason, policy_inputs=None, feedback=None):
         return ControllerOutput(
             action=UNABLE_TO_ASSESS,
-            feedback=_feedback(UNABLE_TO_ASSESS, exercise, None, reason),
+            feedback=feedback or _feedback(UNABLE_TO_ASSESS, exercise, None,
+                                           reason),
             reason=f"Attempt not assessed: {reason}. Settings unchanged.",
             decision=NOT_ASSESSABLE,
             previous_parameters=dict(current),
@@ -402,8 +404,19 @@ def decide(exercise, current_parameters, attempt, history,
     ):
         return unable("the attempt is not the most recent session")
 
+    # Measurement version: not a camera-quality problem, so no
+    # lighting/framing advice.
+    if version_mismatch(attempt, policy, exercise):
+        issue = session_quality_issue(attempt, policy, exercise)
+        return unable(issue, feedback=(
+            "This attempt was recorded with an earlier measurement method "
+            f"(version {attempt.get('metrics_version')}) and cannot be "
+            "compared with the current method (version "
+            f"{exercise.metrics_version}), so it was not scored. Your "
+            "exercise settings are unchanged."))
+
     # Tracking quality and invalid values (same gate as the policy).
-    issue = session_quality_issue(attempt, policy)
+    issue = session_quality_issue(attempt, policy, exercise)
     if issue:
         return unable(issue)
 
@@ -461,9 +474,13 @@ def decide(exercise, current_parameters, attempt, history,
             else POLICY_MAINTAIN
         )
 
+    feedback = _feedback(action, exercise, check)
+    if result.inputs.get("version_note"):
+        feedback += " " + result.inputs["version_note"]
+
     return ControllerOutput(
         action=action,
-        feedback=_feedback(action, exercise, check),
+        feedback=feedback,
         reason=reason,
         decision=decision,
         previous_parameters=dict(current),

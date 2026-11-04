@@ -37,7 +37,11 @@ INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 @dataclass(frozen=True)
 class PolicyConfig:
     window: int = 2
-    metrics_version: int = 2
+    # Measurement version a session must have to be compared. None: the
+    # exercise's CURRENT version (ExerciseConfig.metrics_version), so a
+    # session recorded under an older definition of the same exercise is
+    # excluded with an explicit reason instead of being mixed in.
+    metrics_version: Optional[int] = None
     # Tracking-quality requirements for a session to be used.
     min_measured_fraction: float = 0.8
     min_fps: float = 10.0
@@ -136,11 +140,53 @@ def invalid_values(session):
     return problems
 
 
-def session_quality_issue(session, policy):
+def required_metrics_version(session, policy, exercise=None):
+    """Version a session must have to be comparable (see PolicyConfig)."""
+    if policy.metrics_version is not None:
+        return policy.metrics_version
+    if exercise is None:
+        from src.exercises.catalogue import get_exercise_config
+        exercise = get_exercise_config(session.get("exercise_id"))
+    return None if exercise is None else exercise.metrics_version
+
+
+def version_mismatch(session, policy, exercise=None):
+    """True when the session was not measured with the version required
+    for comparison (see required_metrics_version)."""
+    required = required_metrics_version(session, policy, exercise)
+    return required is None or session.get("metrics_version") != required
+
+
+def version_note(exercise, required, comparable, needed_total):
+    """
+    Plain-language explanation, for patient feedback and the rationale,
+    when sessions were set aside because the exercise's measurement
+    definition changed. `comparable`: usable sessions at the current
+    parameters; `needed_total`: sessions required (PolicyConfig.window).
+    """
+    note = (
+        f"{exercise.display_name} is now measured with an updated method "
+        f"(version {required}). Earlier sessions remain in your history "
+        "but are not compared with the new measurements."
+    )
+    needed = max(0, needed_total - comparable)
+    if needed:
+        note += (f" {needed} more session(s) at these settings are needed "
+                 "before any change can be suggested.")
+    return note
+
+
+def session_quality_issue(session, policy, exercise=None):
     """Reason a session cannot be used, or None if it is usable."""
 
-    if session.get("metrics_version") != policy.metrics_version:
-        return "recorded with an older/unknown measurement version"
+    required = required_metrics_version(session, policy, exercise)
+    recorded = session.get("metrics_version")
+    if version_mismatch(session, policy, exercise):
+        return (
+            "recorded with an older/unknown measurement version "
+            f"(version {recorded}; this exercise now uses version "
+            f"{required}; not comparable)"
+        )
 
     status = session.get("session_status")
     if status is not None and status != "COMPLETE":
@@ -243,7 +289,7 @@ def evaluate(exercise, current_parameters, sessions, policy=None):
             })
             continue
 
-        issue = session_quality_issue(session, policy)
+        issue = session_quality_issue(session, policy, exercise)
         if issue:
             excluded.append({
                 "session_id": session.get("session_id"), "reason": issue,
@@ -254,11 +300,25 @@ def evaluate(exercise, current_parameters, sessions, policy=None):
 
     window = considered[-policy.window:]
 
+    # Sessions of this exercise measured under another definition: say so
+    # (not only "too few sessions"), with how many comparable ones are
+    # still needed.
+    required = (policy.metrics_version if policy.metrics_version is not None
+                else exercise.metrics_version)
+    note = None
+    if any(
+        s.get("metrics_version") is not None
+        and version_mismatch(s, policy, exercise)
+        for s in ordered
+    ):
+        note = version_note(exercise, required, len(window), policy.window)
+
     inputs = {
         "policy": asdict(policy),
         "exercise_id": exercise.exercise_id,
         "sessions_used": window,
         "sessions_excluded": excluded,
+        "version_note": note,
         "not_used_in_decision": [
             "movement smoothness (velocity peaks): not validated",
             "experimental posture measurements: not validated",
@@ -269,7 +329,7 @@ def evaluate(exercise, current_parameters, sessions, policy=None):
     def decision(kind, reasons, proposed=None, changed=None):
         return Decision(
             decision=kind,
-            rationale=reasons,
+            rationale=reasons + ([note] if note else []),
             previous_parameters=dict(current),
             proposed_parameters=dict(proposed or current),
             changed_parameter=changed,

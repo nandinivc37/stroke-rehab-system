@@ -26,6 +26,7 @@ changes only what the legacy config does not use:
   * the smoothness indicator computed on a 10 Hz time base.
 """
 
+import logging
 import math
 from collections import deque
 from dataclasses import dataclass
@@ -35,12 +36,19 @@ from typing import Optional
 from src.exercises.angles import LANDMARK_NAMES, PLANE_UNVERIFIED
 from src.quality_assessment.dtw import dtw_distance, similarity_from_error
 
+logger = logging.getLogger(__name__)
+
 STATUS_NO_POSE = "no_pose"
 STATUS_NOT_VISIBLE = "not_visible"
 STATUS_UNMEASURABLE = "unmeasurable"
 STATUS_IMPLAUSIBLE = "implausible"
 STATUS_ERROR = "error"
 STATUS_OK = "ok"
+
+# Outcome of a completed repetition (ExerciseAnalyzer.rep_events).
+REP_COUNTED = "counted"
+REP_OFF_PLANE = "off_plane"
+REP_PLANE_UNVERIFIED = "plane_unverified"
 
 # Time base for the v2 smoothness indicator.
 SMOOTHNESS_RESAMPLE_HZ = 10.0
@@ -130,6 +138,23 @@ def rolling_median_peak(values, width=3):
     ))
 
 
+def rep_reason(event):
+    """Plain-language reason for a rep_events entry."""
+
+    if event["outcome"] == REP_COUNTED:
+        return f"counted (peak {event['peak']}°)"
+    if event["outcome"] == REP_PLANE_UNVERIFIED:
+        return ("not counted: movement direction could not be verified "
+                "(calibrating, or depth too ambiguous to tell front from "
+                "behind)")
+    plane = "unknown" if event["plane"] is None else f"{event['plane']:g}°"
+    return (
+        f"not counted: movement plane {plane}, expected "
+        f"{event['expected_plane']:g}±{event['plane_tolerance']:g}° "
+        f"(0 = forward, 90 = sideways)"
+    )
+
+
 class ExerciseAnalyzer:
 
     def __init__(self, config, side, parameters=None):
@@ -162,6 +187,8 @@ class ExerciseAnalyzer:
     def reset(self):
         # Fresh measurement per session (stateful ones calibrate).
         self.angle_fn = self.config.make_angle_fn()
+        if getattr(self, "_image_size", None):
+            self.set_image_size(*self._image_size)
         self.reps = 0
         self.off_plane_reps = 0
         self.plane_unverified_reps = 0
@@ -174,9 +201,20 @@ class ExerciseAnalyzer:
         self._prev_zone = None
         self._prev_zone_t = None
         self._up_plane_votes = []
+        self._up_planes = []
         self._up_unverified = 0
         self._rep_in_plane = True
         self._rep_plane_verified = True
+        self._rep_plane = None
+        # One entry per completed repetition: why it was (not) counted.
+        self.rep_events = []
+        # Gap bridging and segmentation diagnostics.
+        self.bridged_gaps = 0
+        self.abandoned_segments = 0
+        self.segment_end_reason = None
+        self.resting_angle = None
+        self._rest_window = deque()
+        self._rest_since = None
         self._excursion_peak = None
         self.rep_peaks = []          # [(robust peak, in plane)]
         self._recent = deque(maxlen=3)
@@ -218,6 +256,14 @@ class ExerciseAnalyzer:
         # Per-frame diagnostics:
         # (t_s, status, angle, plane, min_required_visibility, frame)
         self.frame_log = []
+
+    def set_image_size(self, width, height):
+        """Frame size of the images the pose model processes, for
+        measurements that use image landmarks (kept across reset)."""
+        self._image_size = (width, height)
+        configure = getattr(self.angle_fn, "set_image_size", None)
+        if configure is not None:
+            configure(width, height)
 
     @property
     def reference(self):
@@ -315,6 +361,8 @@ class ExerciseAnalyzer:
                 self.first_timestamp = timestamp
             self.last_timestamp = timestamp
 
+        self._check_tracking_lost(timestamp)
+
         if results is None or results.pose_landmarks is None:
             self._log(timestamp, STATUS_NO_POSE)
             return self._frame(STATUS_NO_POSE)
@@ -358,7 +406,7 @@ class ExerciseAnalyzer:
                       visibility, reading.reference_frame)
             return self._frame(STATUS_IMPLAUSIBLE)
 
-        self._handle_gap(timestamp)
+        self._handle_gap(timestamp, angle)
 
         self.frames_measured += 1
         if reading.reference_frame == "camera":
@@ -398,16 +446,55 @@ class ExerciseAnalyzer:
             return False
         return abs(value - v0) / (timestamp - t0) > limit
 
-    def _handle_gap(self, timestamp):
-        """Abandon a repetition when tracking was lost for too long."""
+    def _check_tracking_lost(self, timestamp):
+        """End an attempt as soon as no frame has been measured for
+        SegmentationConfig.max_gap_s, rather than staying "active"
+        through tracking loss until the arm is seen again."""
 
-        max_gap = self.config.rep.max_gap_s
+        seg_gap = self.config.segmentation.max_gap_s
+        last = self._last_measured_t
+        if (
+            seg_gap is not None and self.movement_active
+            and timestamp is not None and last is not None
+            and timestamp - last > seg_gap
+        ):
+            self._end_segment(
+                keep=False,
+                reason=f"abandoned: tracking lost > {seg_gap:g} s")
+
+    def _handle_gap(self, timestamp, angle):
+        """
+        Tracking was lost between measured frames. Abandon the movement
+        attempt after SegmentationConfig.max_gap_s, and the repetition in
+        progress after RepCountingConfig.max_gap_s unless the gap is
+        bridgeable (max_bridged_gap_s, arm still raised on return).
+        """
+
+        rep = self.config.rep
         last = self._last_measured_t
         self._last_measured_t = timestamp
 
-        if max_gap is None or timestamp is None or last is None:
+        if timestamp is None or last is None:
             return
-        if timestamp - last <= max_gap:
+        gap = timestamp - last
+
+        seg_gap = self.config.segmentation.max_gap_s
+        if seg_gap is not None and gap > seg_gap and self.movement_active:
+            self._end_segment(keep=False,
+                              reason=f"abandoned: tracking lost {gap:.1f} s")
+
+        if rep.max_gap_s is None or gap <= rep.max_gap_s:
+            return
+
+        if (
+            self.stage == "up"
+            and rep.max_bridged_gap_s is not None
+            and gap <= rep.max_bridged_gap_s
+            and angle >= rep.down_threshold
+        ):
+            # Still raised: the repetition continues; it is counted only
+            # once the lowering is observed.
+            self.bridged_gaps += 1
             return
 
         if self.stage == "up":
@@ -419,6 +506,7 @@ class ExerciseAnalyzer:
         self._down_dwell = 0.0
         self._prev_zone = None
         self._up_plane_votes = []
+        self._up_planes = []
         self._up_unverified = 0
         self._excursion_peak = None
         self._recent.clear()
@@ -436,6 +524,8 @@ class ExerciseAnalyzer:
     def _update_segmentation(self, angle, plane, timestamp,
                              unverified=False):
         seg = self.config.segmentation
+
+        resting = self._update_rest(angle, timestamp)
 
         if angle >= seg.start_threshold:
             self.movement_active = True
@@ -456,25 +546,71 @@ class ExerciseAnalyzer:
             self.return_frames += 1
 
             if self.return_frames >= seg.end_frames:
-                if self._segment_is_kept(
-                    self.current_segment, self._current_active_frames
-                ):
-                    self.movement_segments.append(self.current_segment.copy())
-                    self._segment_planes.append(list(self._current_planes))
-                    self._segment_unverified.append(
-                        list(self._current_unverified)
-                    )
-                    self._segment_times.append(list(self._current_times))
-
-                self.current_segment = []
-                self._current_planes = []
-                self._current_unverified = []
-                self._current_times = []
-                self._current_active_frames = 0
-                self.movement_active = False
-                self.return_frames = 0
+                self._end_segment(keep=True, reason="returned below "
+                                  f"{seg.end_threshold:g}°")
         else:
             self.return_frames = 0
+            if resting and seg.rest_end_s is not None:
+                self._end_segment(
+                    keep=True,
+                    reason=f"resting still below {seg.start_threshold:g}°",
+                )
+
+    def _update_rest(self, angle, timestamp):
+        """
+        Track stillness below the segmentation start threshold. Returns
+        True when the angle has stayed below it, within rest_spread
+        degrees, for rest_end_s seconds (1 s when the rule is disabled,
+        for the resting_angle diagnostic). Time-based, so independent of
+        the frame rate; frames without timestamps never count as rest.
+        """
+
+        seg = self.config.segmentation
+        if timestamp is None or angle >= seg.start_threshold:
+            self._rest_window.clear()
+            self._rest_since = None
+            return False
+        window = seg.rest_end_s if seg.rest_end_s is not None else 1.0
+        if (
+            self._rest_window
+            and timestamp - self._rest_window[-1][0] > seg.rest_max_sample_gap_s
+        ):
+            # Unobserved time (tracking lost) never counts as stillness.
+            self._rest_window.clear()
+            self._rest_since = None
+        if self._rest_since is None:
+            self._rest_since = timestamp
+        self._rest_window.append((timestamp, angle))
+        while self._rest_window and self._rest_window[0][0] < timestamp - window:
+            self._rest_window.popleft()
+        values = [a for _, a in self._rest_window]
+        if (
+            timestamp - self._rest_since >= window
+            and max(values) - min(values) <= seg.rest_spread
+        ):
+            self.resting_angle = median(values)
+            return True
+        return False
+
+    def _end_segment(self, keep, reason):
+        if keep and self._segment_is_kept(
+            self.current_segment, self._current_active_frames
+        ):
+            self.movement_segments.append(self.current_segment.copy())
+            self._segment_planes.append(list(self._current_planes))
+            self._segment_unverified.append(list(self._current_unverified))
+            self._segment_times.append(list(self._current_times))
+        elif not keep:
+            self.abandoned_segments += 1
+
+        self.current_segment = []
+        self._current_planes = []
+        self._current_unverified = []
+        self._current_times = []
+        self._current_active_frames = 0
+        self.movement_active = False
+        self.return_frames = 0
+        self.segment_end_reason = reason
 
     def _segment_is_kept(self, segment, active_frames):
         seg = self.config.segmentation
@@ -534,6 +670,8 @@ class ExerciseAnalyzer:
             self._down_dwell = 0.0
             self._up_dwell += self._zone_dwell("up", timestamp)
             self._up_plane_votes.append(self._plane_ok(plane))
+            if plane is not None:
+                self._up_planes.append(plane)
             self._up_unverified += unverified
             self._track_peak(robust)
 
@@ -545,6 +683,9 @@ class ExerciseAnalyzer:
                 self._rep_in_plane, self._rep_plane_verified = (
                     self._rep_plane_decision()
                 )
+                self._rep_plane = (
+                    median(self._up_planes) if self._up_planes else None
+                )
 
         elif angle <= rep.down_threshold:
             self.down_frames += 1
@@ -552,6 +693,7 @@ class ExerciseAnalyzer:
             self._up_dwell = 0.0
             self._down_dwell += self._zone_dwell("down", timestamp)
             self._up_plane_votes = []
+            self._up_planes = []
             self._up_unverified = 0
 
             if (
@@ -565,10 +707,14 @@ class ExerciseAnalyzer:
                 )
                 if self._rep_in_plane:
                     self.reps += 1
+                    outcome = REP_COUNTED
                 else:
                     self.off_plane_reps += 1
+                    outcome = REP_OFF_PLANE
                     if not self._rep_plane_verified:
                         self.plane_unverified_reps += 1
+                        outcome = REP_PLANE_UNVERIFIED
+                self._record_rep(outcome, timestamp)
                 self._excursion_peak = None
             elif self.stage == "down":
                 self._excursion_peak = None
@@ -577,6 +723,88 @@ class ExerciseAnalyzer:
             self._prev_zone = "mid"
             self._prev_zone_t = timestamp
             self._track_peak(robust)
+
+    def _record_rep(self, outcome, timestamp):
+        check = self.config.plane_check
+        event = {
+            "t_s": self._relative_time(timestamp),
+            "outcome": outcome,
+            "peak": (
+                None if self._excursion_peak is None
+                else round(self._excursion_peak, 1)
+            ),
+            "target": self.up_threshold,
+            "plane": (
+                None if self._rep_plane is None else round(self._rep_plane, 1)
+            ),
+            "expected_plane": None if check is None else check.expected_plane,
+            "plane_tolerance": None if check is None else check.tolerance,
+        }
+        event["reason"] = rep_reason(event)
+        self.rep_events.append(event)
+        logger.info("Repetition %s: %s", outcome, event["reason"])
+
+    def debug_state(self):
+        """
+        Everything that decides whether a repetition counts, for the
+        diagnostic overlay and logs: current measurement, thresholds,
+        plane check, segmentation and repetition state, and why the
+        current or last repetition is not counted.
+        """
+
+        check = self.config.plane_check
+        measured = self.last_status == STATUS_OK
+        details = getattr(self.angle_fn, "last_details", None) or {}
+        return {
+            "status": self.last_status,
+            "angle": self.current_angle if measured else None,
+            "target": self.up_threshold,
+            "down_threshold": self.config.rep.down_threshold,
+            "plane": self.current_plane if measured else None,
+            "plane_status": self.current_plane_status if measured else None,
+            "world_plane": details.get("world_plane"),
+            "image_plane": details.get("image_plane"),
+            "plane_source": details.get("plane_source"),
+            "camera_distance": details.get("camera_distance"),
+            "expected_plane": None if check is None else check.expected_plane,
+            "plane_tolerance": None if check is None else check.tolerance,
+            "plane_ok": self._plane_ok(self.current_plane) if measured
+            else None,
+            "segment_active": self.movement_active,
+            "segment_end_reason": self.segment_end_reason,
+            "resting_angle": self.resting_angle,
+            "stage": self.stage,
+            "reps": self.reps,
+            "off_plane_reps": self.off_plane_reps,
+            "plane_unverified_reps": self.plane_unverified_reps,
+            "interrupted_reps": self.interrupted_reps,
+            "bridged_gaps": self.bridged_gaps,
+            "pending": self.pending_reason(),
+            "last_rep": self.rep_events[-1] if self.rep_events else None,
+        }
+
+    def pending_reason(self):
+        """Why the repetition in progress has not (yet) counted."""
+
+        if self.last_status != STATUS_OK:
+            return f"arm not measured ({self.last_status or 'no frame'})"
+        down = self.config.rep.down_threshold
+        if self.stage == "up":
+            if self._rep_in_plane:
+                return f"lower below {down:g}° to complete the repetition"
+            if not self._rep_plane_verified:
+                return ("will NOT count: movement direction could not be "
+                        "verified")
+            plane = "?" if self._rep_plane is None else f"{self._rep_plane:.0f}"
+            check = self.config.plane_check
+            return (f"will NOT count: plane {plane}° outside "
+                    f"{check.expected_plane:g}±{check.tolerance:g}°")
+        if self.current_angle >= self.up_threshold:
+            return "hold above the target briefly"
+        if self.movement_active:
+            return (f"raise to the target ({self.current_angle:.0f}° of "
+                    f"{self.up_threshold:g}°)")
+        return "ready"
 
     def _track_peak(self, robust):
         if self._excursion_peak is None or robust > self._excursion_peak:
@@ -851,7 +1079,12 @@ class ExerciseAnalyzer:
                 "off_plane_segments": off_plane_segments,
                 "plane_unverified_segments": plane_unverified_segments,
                 "plane_unverified_reps": self.plane_unverified_reps,
+                "rep_events": list(self.rep_events),
                 "interrupted_reps": self.interrupted_reps,
+                "bridged_gaps": self.bridged_gaps,
+                "abandoned_segments": self.abandoned_segments,
+                "resting_angle": (None if self.resting_angle is None
+                                  else round(self.resting_angle, 1)),
                 "rep_in_progress_at_end": self.stage == "up",
                 "frame_log": list(self.frame_log),
             })

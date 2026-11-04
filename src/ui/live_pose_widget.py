@@ -1,4 +1,5 @@
 import logging
+import os
 import statistics
 import sys
 import time
@@ -20,6 +21,7 @@ from src.compensation_detection.geometric_measures import (
     ExperimentalPostureMonitor,
 )
 from src.exercises.analyzer import (
+    REP_COUNTED,
     ExerciseAnalyzer,
     STATUS_IMPLAUSIBLE,
     STATUS_NO_POSE,
@@ -30,6 +32,7 @@ from src.exercises.analyzer import (
 from src.exercises.angles import PLANE_CALIBRATING, PLANE_DEPTH_AMBIGUOUS
 from src.exercises.legacy import LEGACY_SHOULDER_RAISE_2D
 from src.pose_estimation.config import pose_settings
+from src.validation.landmark_recorder import LandmarkRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,78 @@ PLANE_HINTS = {
     PLANE_DEPTH_AMBIGUOUS: "\nMovement direction unclear: face the "
                            "camera and raise the arm forward.",
 }
+
+# Temporary diagnostics (off by default). REHAB_DEBUG_OVERLAY=1 shows the
+# repetition decision state under the video and logs it per frame at
+# DEBUG level; REHAB_RECORD_LANDMARKS=<file> appends every frame's
+# landmarks and decision state to a JSON Lines file for offline replay
+# (python -m src.validation.flexion_trace <file>).
+DEBUG_OVERLAY_ENV = "REHAB_DEBUG_OVERLAY"
+RECORD_LANDMARKS_ENV = "REHAB_RECORD_LANDMARKS"
+
+
+def _deg(value):
+    return "—" if value is None else f"{value:.0f}°"
+
+
+def format_debug_state(state):
+    """Multi-line text of ExerciseAnalyzer.debug_state()."""
+    if state["plane_ok"] is None:
+        check = state["plane_status"] or "not assessed"
+    else:
+        check = "OK" if state["plane_ok"] else "OUT OF RANGE"
+    expected = (
+        "none" if state["expected_plane"] is None
+        else f"{state['expected_plane']:g}±{state['plane_tolerance']:g}°"
+    )
+    last = state["last_rep"]
+    distance = state.get("camera_distance")
+    camera = "" if distance is None else f" | camera ~{distance:.1f} m"
+    return "\n".join([
+        f"DEBUG  elevation {_deg(state['angle'])} | target "
+        f"{state['target']:g}° | lower below {state['down_threshold']:g}°",
+        f"plane {_deg(state['plane'])} (image {_deg(state['image_plane'])},"
+        f" world {_deg(state['world_plane'])}) | expected {expected} | "
+        f"{check}{camera}",
+        f"segment {'ACTIVE' if state['segment_active'] else 'idle'} "
+        f"(rest {_deg(state.get('resting_angle'))}; last end: "
+        f"{state.get('segment_end_reason') or '—'}) | "
+        f"rep stage {state['stage']} | reps {state['reps']}, off-plane "
+        f"{state['off_plane_reps']}, unverified "
+        f"{state['plane_unverified_reps']}, interrupted "
+        f"{state['interrupted_reps']}, bridged {state.get('bridged_gaps', 0)}",
+        f"now: {state['pending']}",
+        f"last rep: {last['reason'] if last else '—'}",
+    ] + _compensation_debug_lines(state.get("compensation")))
+
+
+def _compensation_debug_lines(diagnostics):
+    """Overlay lines for GeometricCompensationDetector.diagnostics()."""
+    if not diagnostics:
+        return []
+    short = {"trunk_lean_image_plane": "lean side",
+             "trunk_lean_depth": "lean fwd", "shoulder_hiking": "hiking"}
+    parts = []
+    for name, p in diagnostics["patterns"].items():
+        if p["deviation"] is not None:
+            detail = f"{p['deviation']:+.2f}/{p['threshold']:g}"
+        else:
+            detail = p["reason"] or "-"
+        parts.append(f"{short.get(name, name)} {p['state']} ({detail})")
+    samples = max((p["baseline_samples"]
+                   for p in diagnostics["patterns"].values()), default=0)
+    return [
+        "posture: baseline "
+        + ("ready" if diagnostics["baseline_established"]
+           else f"calibrating ({samples} samples)")
+        + f" | trunk {_deg(diagnostics['trunk_inclination'])} from vertical",
+        " | ".join(parts) if parts else "posture: no data",
+    ]
+
+
+CAMERA_LOST_FEEDBACK = (
+    "Posture check (experimental): unable to assess — camera not "
+    "delivering frames", "info")
 
 # Session status values stored in sessions.session_status.
 SESSION_COMPLETE = "COMPLETE"
@@ -185,6 +260,9 @@ class LivePoseWidget(QWidget):
         self.analysis_halted = False
         self.frame_size = None
         self._timings = {"read": [], "inference": [], "analysis": []}
+        self.debug_overlay = os.environ.get(DEBUG_OVERLAY_ENV) == "1"
+        self.recorder = None
+        self._debug_text = None
 
         self.video_label = QLabel()
         self.video_label.setAlignment(
@@ -236,10 +314,19 @@ class LivePoseWidget(QWidget):
         self._set_compensation_label(
             "Posture check (experimental): waiting for camera", "info")
 
+        self.debug_label = QLabel()
+        self.debug_label.setWordWrap(True)
+        self.debug_label.setStyleSheet(
+            "font-family: monospace; font-size: 12px; color: #111827; "
+            "background-color: #fef9c3; padding: 4px;"
+        )
+        self.debug_label.setVisible(self.debug_overlay)
+
         layout.addWidget(self.video_label)
         layout.addWidget(self.fps_label)
         layout.addWidget(self.compensation_label)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.debug_label)
 
         # Unthreaded fallback (threaded=False).
         self.timer = QTimer(self)
@@ -297,6 +384,7 @@ class LivePoseWidget(QWidget):
         self.pose = mp.solutions.pose.Pose(**self.pose_config)
 
         self._reset_session_state()
+        self._start_recorder()
 
         self.status_label.setText(
             f"Monitoring {self.affected_side.lower()} arm"
@@ -322,6 +410,40 @@ class LivePoseWidget(QWidget):
         self.analysis_halted = False
         self._display_pending = False
         self._timings = {"read": [], "inference": [], "analysis": []}
+
+    def _start_recorder(self):
+        path = os.environ.get(RECORD_LANDMARKS_ENV)
+        if not path or self.recorder is not None:
+            return
+        try:
+            self.recorder = LandmarkRecorder(path, {
+                "exercise_id": self.exercise.exercise_id,
+                "side": self.affected_side,
+                "parameters": dict(self.analyzer.parameters),
+                "pose_settings": self.pose_config,
+            })
+            logger.warning("Recording landmarks to %s", path)
+        except OSError:
+            logger.exception("Could not open landmark recording %s", path)
+
+    def _diagnose(self, timestamp, results):
+        """Debug overlay text and landmark recording; never raises."""
+        if not (self.debug_overlay or self.recorder):
+            return
+        try:
+            state = self.analyzer.debug_state()
+            state["compensation"] = self.compensation.diagnostics()
+            state["compensation"]["shown"] = (
+                None if self._compensation_feedback is None
+                else self._compensation_feedback[0])
+            if self.debug_overlay:
+                self._debug_text = format_debug_state(state)
+                logger.debug("Repetition state: %s", state)
+            if self.recorder is not None:
+                self.recorder.record(timestamp, self.frame_size, results,
+                                     state)
+        except Exception:
+            logger.exception("Diagnostics failed")
 
     def _stop_worker(self):
         """Stop the capture thread and wait for it (idempotent)."""
@@ -376,6 +498,8 @@ class LivePoseWidget(QWidget):
                 == MAX_CONSECUTIVE_READ_FAILURES
             ):
                 self.camera_lost = True
+                # Clear any previous posture verdict.
+                self._compensation_feedback = CAMERA_LOST_FEEDBACK
                 return {
                     "display": None,
                     "status": (
@@ -383,6 +507,7 @@ class LivePoseWidget(QWidget):
                         "Check the connection and restart the session."
                     ),
                     "fps": None,
+                    "compensation": self._compensation_feedback,
                 }
             return None
 
@@ -391,6 +516,7 @@ class LivePoseWidget(QWidget):
         self.frame_times.append(timestamp)
         self._timings["read"].append(read_time)
         self.frame_size = (int(frame.shape[1]), int(frame.shape[0]))
+        self.analyzer.set_image_size(*self.frame_size)
 
         # A Qt slot must never raise: PyQt6 aborts the whole application
         # on an unhandled exception. Errors are logged, counted in the
@@ -406,6 +532,10 @@ class LivePoseWidget(QWidget):
             self.consecutive_errors += 1
             self.last_error = f"{type(error).__name__}: {error}"
             display = None
+            # Never leave a stale posture verdict on screen.
+            self._compensation_feedback = (
+                "Posture check (experimental): unable to assess "
+                "(frame processing error)", "info")
 
             if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                 self.analysis_halted = True
@@ -418,7 +548,8 @@ class LivePoseWidget(QWidget):
                 status = f"Frame processing error: {self.last_error}"
 
         return {"display": display, "status": status, "fps": self._fps(),
-                "compensation": self._compensation_feedback}
+                "compensation": self._compensation_feedback,
+                "debug": self._debug_text}
 
     def recent_fps(self):
         """Processed frames per second over the last few frames."""
@@ -471,7 +602,12 @@ class LivePoseWidget(QWidget):
             analysis.movement_active,
         )
 
-        self._update_compensation(results, analysis.movement_active)
+        self._update_compensation(
+            results, analysis.movement_active,
+            arm_at_rest=(analysis.status == STATUS_OK
+                         and not analysis.movement_active),
+        )
+        self._diagnose(timestamp, results)
 
         display = frame.copy()
 
@@ -493,13 +629,17 @@ class LivePoseWidget(QWidget):
 
         return display, self._status_text()
 
-    def _update_compensation(self, results, movement_active):
+    def _update_compensation(self, results, movement_active,
+                             arm_at_rest=None):
         """
         Compensation check for this frame. Its failure must not stop
         repetition counting or DTW, so errors only disable the check.
+        It uses only the attempt signal (angle-based segmentation), never
+        repetition counting or plane validation.
         """
         try:
-            frame = self.compensation.update(results, movement_active)
+            frame = self.compensation.update(results, movement_active,
+                                             arm_at_rest)
             self._compensation_feedback = compensation_feedback(
                 frame, self.compensation.config, movement_active,
                 self.compensation.baseline_established(),
@@ -537,6 +677,9 @@ class LivePoseWidget(QWidget):
 
         if output.get("compensation") is not None:
             self._set_compensation_label(*output["compensation"])
+
+        if output.get("debug") is not None:
+            self.debug_label.setText(output["debug"])
 
     def _reps_text(self):
         target = self.analyzer.parameters.get("target_reps")
@@ -622,8 +765,19 @@ class LivePoseWidget(QWidget):
         return (
             f"{self._reps_text()}    "
             f"{self.exercise.angle_label}: {angle}{tracked}"
-            f"{self._plane_hint()}"
+            f"{self._plane_hint()}{self._rep_feedback()}"
         )
+
+    def _rep_feedback(self):
+        """Why the current or last repetition does not count, so a
+        rejected repetition is never silent."""
+        pending = self.analyzer.pending_reason()
+        if pending.startswith("will NOT count"):
+            return f"\nThis repetition {pending}"
+        events = self.analyzer.rep_events
+        if events and events[-1]["outcome"] != REP_COUNTED:
+            return f"\nLast repetition {events[-1]['reason']}"
+        return ""
 
     def _plane_hint(self):
         """Say why repetitions cannot currently be verified."""
@@ -671,6 +825,10 @@ class LivePoseWidget(QWidget):
 
         self._stop_worker()
         self.timer.stop()
+
+        if self.recorder is not None:
+            self.recorder.close()
+            self.recorder = None
 
         if self.pose is not None:
             self.pose.close()

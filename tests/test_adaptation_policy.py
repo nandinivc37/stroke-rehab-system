@@ -33,7 +33,8 @@ def check_realistic(reps, off_plane, peak, params):
 
 
 def session(sid, reps=10, peak=95.0, similarity=85.0, params=None,
-            target_reps=10, off_plane=0, version=2, frames=300,
+            target_reps=10, off_plane=0, version=FLEXION.metrics_version,
+            frames=300,
             measured=300, errors=0, fps=25.0, status="COMPLETE"):
     check_realistic(reps, off_plane, peak, params or PARAMS)
     return {

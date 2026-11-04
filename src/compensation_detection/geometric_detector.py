@@ -9,8 +9,20 @@ results must not be presented as clinical findings. Adjust them in
 DetectorConfig after therapist review; every session stores the
 configuration it used.
 
-Patterns (each a deviation from the patient's own resting posture,
-measured at the start of the session with the arms relaxed):
+Two references per pattern, both from the patient's own resting posture
+(median of a stable resting window with the arm measured and relaxed):
+  * current resting baseline: refreshed at every stable rest between
+    attempts. The live verdict (detected / not_detected, episodes,
+    detected_fraction) is relative to it, so shifting in the chair is
+    not flagged as compensation during the next attempt;
+  * session-start baseline: the first stable resting window of the
+    session, never replaced. Deviations from it are reported separately
+    (summary "session_start", "rest_drift") so that a patient leaning
+    gradually further between attempts cannot make that change disappear
+    from the session record. It is NOT an ideal or clinically validated
+    posture, only where this session started.
+
+Patterns:
 
   trunk_lean_image_plane
       Tilt of the hip-midpoint -> shoulder-midpoint line within the
@@ -40,6 +52,12 @@ Assessment states per pattern and frame:
 Frames at rest (no movement attempt) are not assessed: resting posture
 is not compensation.
 
+Implausible pose estimates are unable_to_assess, never detected: a trunk
+more than max_trunk_inclination degrees from vertical, or a deviation
+beyond the pattern's plausible_limit, is not a seated posture but a
+MediaPipe world-landmark failure (recorded sessions, 2026-11-01, had
+trunk "lean" of 150-179° and deviations up to 193° scored as detected).
+
 Restricted range of motion and slow movement are not inputs: only trunk
 and shoulder-girdle displacement from the resting posture is measured.
 """
@@ -64,6 +82,19 @@ DETECTED = "detected"
 NOT_DETECTED = "not_detected"
 UNABLE = "unable_to_assess"
 
+# Stable categorical reasons (summaries count frames per reason); the
+# measured values are in diagnostics(), never in the reason text.
+REASON_IMPLAUSIBLE_POSE = (
+    "implausible pose estimate (trunk beyond {limit:g}° from vertical)")
+REASON_IMPLAUSIBLE_DEVIATION = (
+    "implausible measurement (deviation beyond plausible limit)")
+REASON_NO_POSE = "no pose detected"
+REASON_NOT_VISIBLE = "shoulders/hips not visible"
+# Ordinary visibility loss: the only reasons that may hold an ongoing
+# warning for up to max_gap_frames. A geometrically invalid frame
+# (implausible, undefined geometry) ends the warning immediately.
+HOLDABLE_REASONS = (REASON_NO_POSE, REASON_NOT_VISIBLE)
+
 TRUNK_IMAGE = "trunk_lean_image_plane"
 TRUNK_DEPTH = "trunk_lean_depth"
 SHOULDER_HIKING = "shoulder_hiking"
@@ -85,6 +116,9 @@ class PatternConfig:
     landmarks: tuple
     cue: str
     depth_dependent: bool = False
+    # |deviation from baseline| beyond this is a pose-estimation failure,
+    # not posture (engineering bound, far above enter_threshold).
+    plausible_limit: float = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +130,9 @@ class DetectorConfig:
     # collection continues.
     baseline_stability: float = 0.25
     min_visibility: float = 0.5
+    # Hip-midpoint -> shoulder-midpoint line further than this from
+    # vertical (3D) is not a seated posture: pose estimate rejected.
+    max_trunk_inclination: float = 60.0
     smoothing_frames: int = 5
     onset_frames: int = 5
     release_frames: int = 5
@@ -108,6 +145,7 @@ class DetectorConfig:
             enter_threshold=10.0, exit_threshold=7.0,
             landmarks=SHOULDERS + HIPS,
             cue="Keep your trunk upright and still",
+            plausible_limit=45.0,
         ),
         PatternConfig(
             TRUNK_DEPTH, "Trunk lean towards/away from camera (depth-based)",
@@ -115,12 +153,14 @@ class DetectorConfig:
             landmarks=SHOULDERS + HIPS,
             cue="Keep your trunk upright and still",
             depth_dependent=True,
+            plausible_limit=45.0,
         ),
         PatternConfig(
             SHOULDER_HIKING, "Shoulder hiking (affected side)",
             "shoulder widths", enter_threshold=0.10, exit_threshold=0.07,
             landmarks=SHOULDERS + HIPS,
             cue="Keep your shoulder relaxed and down",
+            plausible_limit=0.5,
         ),
     )
     # Per-exercise threshold overrides {exercise_id: {pattern: (enter,
@@ -145,8 +185,8 @@ class DetectorConfig:
         return DetectorConfig(**dict(
             {k: getattr(self, k) for k in (
                 "baseline_frames", "baseline_stability", "min_visibility",
-                "smoothing_frames", "onset_frames", "release_frames",
-                "max_gap_frames")},
+                "max_trunk_inclination", "smoothing_frames", "onset_frames",
+                "release_frames", "max_gap_frames")},
             patterns=patterns, exercise_overrides={},
         ))
 
@@ -188,6 +228,20 @@ def measure(points, side):
     return values
 
 
+def trunk_inclination(points):
+    """Angle (degrees) of the hip-midpoint -> shoulder-midpoint line from
+    the camera vertical, in 3D; None if degenerate."""
+
+    trunk = (
+        (points[LEFT_SHOULDER] + points[RIGHT_SHOULDER]) / 2
+        - (points[LEFT_HIP] + points[RIGHT_HIP]) / 2
+    )
+    length = float(np.linalg.norm(trunk))
+    if length < 1e-6:
+        return None
+    return math.degrees(math.acos(max(-1.0, min(1.0, -trunk[1] / length))))
+
+
 # ---------------------------------------------------------
 # Detector
 # ---------------------------------------------------------
@@ -201,6 +255,10 @@ class PatternResult:
     reason: str = ""
     min_visibility: float = None
     baseline_samples: int = 0
+    value: float = None            # raw measurement this frame
+    baseline: float = None         # current resting baseline in force
+    session_baseline: float = None  # session-start baseline (immutable)
+    session_deviation: float = None  # value - session_baseline (raw)
 
 
 class _PatternState:
@@ -215,9 +273,18 @@ class _PatternState:
         self.gap = 0
         # Session statistics (active-movement frames only).
         self.counts = {DETECTED: 0, NOT_DETECTED: 0, UNABLE: 0}
+        # Frames whose warning was held through brief visibility loss:
+        # shown live, but not measured, so never counted as detected.
+        self.held = 0
         self.unable_reasons = {}
         self.episodes = 0
         self.deviations = []
+        self.baseline_updates = 0
+        # Session-start reference (set once, never replaced).
+        self.session_baseline = None
+        self.session_deviations = []    # assessed frames only
+        self.session_beyond = 0         # ... beyond enter_threshold
+        self.max_abs_rest_drift = 0.0
 
     def reset_episode(self):
         self.recent.clear()
@@ -245,6 +312,8 @@ class GeometricCompensationDetector:
         self.frames_resting = 0
         self.frames_active = 0
         self.last = None
+        self.last_inclination = None
+        self._was_active = False
 
     # -----------------------------------------------------
 
@@ -254,23 +323,38 @@ class GeometricCompensationDetector:
         landmarks = results.pose_landmarks.landmark
         return min(landmarks[i].visibility for i in indices)
 
-    def update(self, results, movement_active):
+    def update(self, results, movement_active, arm_at_rest=None):
         """
         Returns {pattern: PatternResult}. While no movement attempt is
-        active the frame may extend the resting baseline but is not
-        assessed (state unable_to_assess, reason "resting").
+        active the frame is not assessed (state unable_to_assess, reason
+        "resting"); it extends the resting baseline only when arm_at_rest
+        (default: not movement_active), i.e. the exercise arm was measured
+        and is not in an attempt. The baseline is re-established at every
+        stable rest, and its samples restart when an attempt begins.
         """
 
         cfg = self.config
+        if arm_at_rest is None:
+            arm_at_rest = not movement_active
         points = None
         if results is not None and getattr(results, "pose_landmarks", None):
             points = world_array(results)
         values = measure(points, self.side) if points is not None else None
+        self.last_inclination = (
+            trunk_inclination(points) if points is not None else None)
+        implausible = (
+            self.last_inclination is not None
+            and self.last_inclination > cfg.max_trunk_inclination
+        )
 
         if movement_active:
             self.frames_active += 1
+            if not self._was_active:
+                for state in self.patterns.values():
+                    state.baseline_samples.clear()
         else:
             self.frames_resting += 1
+        self._was_active = movement_active
 
         out = {}
         for name, state in self.patterns.items():
@@ -279,14 +363,17 @@ class GeometricCompensationDetector:
             value = None if values is None else values.get(name)
             reason = ""
             if results is None or getattr(results, "pose_landmarks", None) is None:
-                reason = "no pose detected"
+                reason = REASON_NO_POSE
             elif visibility is None or visibility < cfg.min_visibility:
-                reason = "shoulders/hips not visible"
+                reason = REASON_NOT_VISIBLE
             elif value is None or not math.isfinite(value):
                 reason = "geometry undefined"
+            elif implausible:
+                reason = REASON_IMPLAUSIBLE_POSE.format(
+                    limit=cfg.max_trunk_inclination)
 
             if not movement_active:
-                if not reason and state.baseline is None:
+                if not reason and arm_at_rest:
                     self._add_baseline_sample(state, value)
                 state.reset_episode()
                 out[name] = PatternResult(
@@ -297,16 +384,28 @@ class GeometricCompensationDetector:
                     threshold=pattern.enter_threshold,
                     min_visibility=visibility,
                     baseline_samples=len(state.baseline_samples),
+                    value=value, baseline=state.baseline,
+                    session_baseline=state.session_baseline,
                 )
                 continue
 
             if not reason and state.baseline is None:
                 reason = "no stable resting baseline"
+            if (
+                not reason and pattern.plausible_limit is not None
+                and abs(value - state.baseline) > pattern.plausible_limit
+            ):
+                reason = REASON_IMPLAUSIBLE_DEVIATION
 
             if reason:
                 state.gap += 1
-                if state.active and state.gap <= cfg.max_gap_frames:
-                    # Brief dropout inside an episode: keep reporting it.
+                if (
+                    state.active and state.gap <= cfg.max_gap_frames
+                    and reason in HOLDABLE_REASONS
+                ):
+                    # Brief visibility loss inside an episode: keep the
+                    # warning on screen, but nothing was measured, so the
+                    # frame is not confirmed compensation.
                     result = PatternResult(
                         DETECTED, deviation=state.deviations[-1]
                         if state.deviations else None,
@@ -314,8 +413,10 @@ class GeometricCompensationDetector:
                         reason="held through brief dropout",
                         min_visibility=visibility,
                         baseline_samples=len(state.baseline_samples),
+                        value=value, baseline=state.baseline,
+                        session_baseline=state.session_baseline,
                     )
-                    state.counts[DETECTED] += 1
+                    state.held += 1
                 else:
                     state.reset_episode()
                     result = PatternResult(
@@ -323,6 +424,8 @@ class GeometricCompensationDetector:
                         unit=pattern.unit, reason=reason,
                         min_visibility=visibility,
                         baseline_samples=len(state.baseline_samples),
+                        value=value, baseline=state.baseline,
+                        session_baseline=state.session_baseline,
                     )
                     state.counts[UNABLE] += 1
                     state.unable_reasons[reason] = (
@@ -335,12 +438,7 @@ class GeometricCompensationDetector:
             while len(state.recent) > cfg.smoothing_frames:
                 state.recent.popleft()
             deviation = float(np.median(state.recent))
-            magnitude = (
-                deviation if name in (TRUNK_DEPTH, SHOULDER_HIKING)
-                else abs(deviation)
-            )
-            # Depth lean counts only towards the camera (forward) and
-            # hiking only upwards; image-plane lean counts either way.
+            magnitude = self._magnitude(name, deviation)
 
             if magnitude >= pattern.enter_threshold:
                 state.above += 1
@@ -361,11 +459,19 @@ class GeometricCompensationDetector:
             verdict = DETECTED if state.active else NOT_DETECTED
             state.counts[verdict] += 1
             state.deviations.append(deviation)
+            session_deviation = value - state.session_baseline
+            state.session_deviations.append(session_deviation)
+            if self._magnitude(name, session_deviation) >= (
+                    pattern.enter_threshold):
+                state.session_beyond += 1
             out[name] = PatternResult(
                 verdict, deviation=deviation,
                 threshold=pattern.enter_threshold, unit=pattern.unit,
                 min_visibility=visibility,
                 baseline_samples=len(state.baseline_samples),
+                value=value, baseline=state.baseline,
+                session_baseline=state.session_baseline,
+                session_deviation=session_deviation,
             )
 
         self.last = out
@@ -383,7 +489,20 @@ class GeometricCompensationDetector:
         spread = float(np.median(np.abs(samples - median)))
         if spread <= cfg.baseline_stability * state.config.enter_threshold:
             state.baseline = median
+            state.baseline_updates += 1
+            if state.session_baseline is None:
+                state.session_baseline = median
+            state.max_abs_rest_drift = max(
+                state.max_abs_rest_drift,
+                abs(median - state.session_baseline))
         # Otherwise keep sliding: the patient was still moving.
+
+    @staticmethod
+    def _magnitude(name, deviation):
+        """Depth lean counts only towards the camera (forward) and hiking
+        only upwards; image-plane lean counts either way."""
+        return (deviation if name in (TRUNK_DEPTH, SHOULDER_HIKING)
+                else abs(deviation))
 
     # -----------------------------------------------------
 
@@ -401,6 +520,8 @@ class GeometricCompensationDetector:
             pattern = state.config
             assessed = state.counts[DETECTED] + state.counts[NOT_DETECTED]
             values = np.abs(np.asarray(state.deviations, dtype=float))
+            session_values = np.abs(
+                np.asarray(state.session_deviations, dtype=float))
             patterns[name] = {
                 "label": pattern.label,
                 "unit": pattern.unit,
@@ -409,8 +530,33 @@ class GeometricCompensationDetector:
                 "depth_dependent": pattern.depth_dependent,
                 "baseline": (None if state.baseline is None
                              else round(state.baseline, 4)),
+                "baseline_updates": state.baseline_updates,
+                # Session-start reference (not an ideal posture).
+                "session_start_baseline": (
+                    None if state.session_baseline is None
+                    else round(state.session_baseline, 4)),
+                "rest_drift": (
+                    None if state.session_baseline is None
+                    else round(state.baseline - state.session_baseline, 4)),
+                "max_abs_rest_drift": (
+                    None if state.session_baseline is None
+                    else round(state.max_abs_rest_drift, 4)),
+                "session_start": {
+                    "max_abs_deviation": (
+                        round(float(session_values.max()), 4)
+                        if session_values.size else None),
+                    "p95_abs_deviation": (
+                        round(float(np.percentile(session_values, 95)), 4)
+                        if session_values.size else None),
+                    "beyond_threshold_fraction": (
+                        round(state.session_beyond / assessed, 4)
+                        if assessed else None),
+                },
                 "assessed": assessed > 0,
                 "frames": dict(state.counts),
+                # Not part of "frames" (layout kept for older sessions)
+                # nor of detected_fraction.
+                "frames_held_through_dropout": state.held,
                 "detected_fraction": (
                     round(state.counts[DETECTED] / assessed, 4)
                     if assessed else None),
@@ -437,8 +583,46 @@ class GeometricCompensationDetector:
             "config": {
                 k: getattr(self.config, k) for k in (
                     "baseline_frames", "baseline_stability",
-                    "min_visibility", "smoothing_frames", "onset_frames",
-                    "release_frames", "max_gap_frames")
+                    "min_visibility", "max_trunk_inclination",
+                    "smoothing_frames", "onset_frames", "release_frames",
+                    "max_gap_frames")
+            },
+        }
+
+    def diagnostics(self):
+        """Latest frame's decision inputs, for the overlay and recordings
+        (JSON-serialisable)."""
+
+        def number(value, digits=3):
+            return None if value is None else round(float(value), digits)
+
+        return {
+            "baseline_established": self.baseline_established(),
+            "trunk_inclination": number(self.last_inclination, 1),
+            "patterns": {
+                name: {
+                    "state": result.state,
+                    "value": number(result.value),
+                    "baseline": number(result.baseline),
+                    "deviation": number(result.deviation),
+                    "current_deviation": number(
+                        None if result.value is None or result.baseline is None
+                        else result.value - result.baseline),
+                    "session_baseline": number(result.session_baseline),
+                    "session_deviation": number(
+                        None if result.value is None
+                        or result.session_baseline is None
+                        else result.value - result.session_baseline),
+                    "threshold": result.threshold,
+                    "reason": result.reason,
+                    "baseline_samples": result.baseline_samples,
+                    "min_visibility": number(result.min_visibility, 2),
+                    "held_through_dropout": (
+                        result.reason == "held through brief dropout"),
+                    "frames_held_through_dropout": (
+                        self.patterns[name].held),
+                }
+                for name, result in (self.last or {}).items()
             },
         }
 

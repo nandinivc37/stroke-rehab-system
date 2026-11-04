@@ -64,7 +64,9 @@ def attempt(sid, reps=10, peak=95.0, similarity=85.0, params=None,
         "session_id": sid,
         "session_date": f"2026-10-{sid:02d} 10:00:00",
         "exercise_id": exercise_id,
-        "metrics_version": 2,
+        # Current definition of the exercise (sessions of an older one
+        # are excluded; see test_live_pipeline_reliability).
+        "metrics_version": get_exercise_config(exercise_id).metrics_version,
         "session_status": "COMPLETE",
         "parameters_json": json.dumps(params),
         "reps": reps,

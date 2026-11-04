@@ -11,6 +11,7 @@ reviewed by a therapist before clinical use.
 """
 
 import math
+from dataclasses import replace
 
 from src.exercises.angles import (
     CalibratedHumeralElevation,
@@ -63,6 +64,14 @@ def _upper_arm_and_shoulders(side):
 # clinically validated.
 REP_MIN_DWELL_S = 0.13
 REP_MAX_GAP_S = 1.0
+# Shoulder flexion only (evidence: recorded front-facing sessions,
+# 2026-11-01). Whole-pose dropouts of 1.1-2.5 s occurred mid-raise while
+# the arm came towards the camera; a dropout this short is bridged when
+# the arm is still raised on return (RepCountingConfig.max_bridged_gap_s),
+# and a seated resting arm reading 21-25° ends the attempt by stillness
+# (SegmentationConfig.rest_end_s). Engineering defaults, not validated.
+FLEXION_MAX_BRIDGED_GAP_S = 3.0
+FLEXION_REST_END_S = 1.0
 METRICS_V2_DTW = DtwConfig(normalization="path")
 # Glitch filter: generous upper bounds on how fast the measured value
 # can change between consecutive measured frames. Chosen well above
@@ -123,13 +132,18 @@ SHOULDER_FLEXION = ExerciseConfig(
     angle_fn=world_humeral_elevation,
     reference_fn=_flexion_reference,
     angle_fn_factory=CalibratedHumeralElevation,
-    rep=_rep_config(80.0, 30.0),
+    rep=replace(_rep_config(80.0, 30.0),
+                max_bridged_gap_s=FLEXION_MAX_BRIDGED_GAP_S),
     dtw=METRICS_V2_DTW,
-    metrics_version=2,
+    # 3: gap bridging and stillness / tracking-loss segmentation change
+    # what a repetition and a scored attempt are (see db.METRICS_VERSION).
+    metrics_version=3,
     max_speed=MAX_ANGULAR_SPEED,
     segmentation=SegmentationConfig(
         start_threshold=25.0, end_threshold=20.0, end_frames=5,
         min_segment_frames=6, min_range=12.0, min_active_frames=5,
+        rest_end_s=FLEXION_REST_END_S,
+        max_gap_s=FLEXION_MAX_BRIDGED_GAP_S,
     ),
     plane_check=PlaneCheckConfig(
         expected_plane=0.0, tolerance=30.0, require_known_plane=True,

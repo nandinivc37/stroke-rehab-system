@@ -49,13 +49,24 @@ class RepCountingConfig:
     # abandons a repetition in progress instead of crediting a movement
     # that was not observed. None disables the check.
     max_gap_s: Optional[float] = None
+    # A longer gap, up to this, is bridged when the repetition was in its
+    # raised stage and the arm is STILL at or above down_threshold when
+    # tracking returns: the lowering that completes the repetition has
+    # not happened yet, so it is the same repetition continuing. A
+    # repetition is still only counted after the lowering is observed.
+    # Recorded live sessions (2026-11-01) lost the whole pose for
+    # 1.1-2.5 s mid-raise in 19 of 21 interrupted repetitions. None keeps
+    # the max_gap_s rule alone.
+    max_bridged_gap_s: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class SegmentationConfig:
     """
     A movement attempt starts when the angle reaches start_threshold and
-    ends after end_frames consecutive frames at or below end_threshold.
+    ends after end_frames consecutive frames at or below end_threshold
+    (or, optionally, after resting still below start_threshold; see
+    rest_end_s).
     """
 
     start_threshold: float
@@ -69,6 +80,21 @@ class SegmentationConfig:
     # kept. The original implementation effectively used 1, which let
     # single-frame landmark glitches become scored "attempts".
     min_active_frames: int = 1
+    # Also end the attempt when the angle has stayed below
+    # start_threshold and still (range <= rest_spread degrees) for
+    # rest_end_s seconds: the patient is resting, even if the resting
+    # angle is above end_threshold. Seated, the resting upper arm reads
+    # about 21-25° relative to the hip-shoulder trunk line in recorded
+    # sessions, above a 20° end_threshold. None disables this rule.
+    rest_end_s: Optional[float] = None
+    rest_spread: float = 4.0
+    # Stillness restarts when consecutive measured frames are further
+    # apart than this: missing frames never count as resting time.
+    rest_max_sample_gap_s: float = 0.5
+    # Abandon the attempt (not scored) when no frame was measured for
+    # longer than this, instead of staying "active" through tracking
+    # loss. None disables this rule.
+    max_gap_s: Optional[float] = None
 
 
 @dataclass(frozen=True)

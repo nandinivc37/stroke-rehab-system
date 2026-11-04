@@ -723,6 +723,17 @@ class RehabPage(QWidget):
             f"direction could not be verified"
             if unverified else ""
         )
+        off_planes = [
+            e["plane"] for e in stats.get("rep_events") or []
+            if e["outcome"] == "off_plane" and e["plane"] is not None
+        ]
+        if off_planes:
+            planes = sorted(off_planes)
+            plane_text += (
+                f" | {len(planes)} repetition(s) not counted: movement "
+                f"plane (median {planes[len(planes) // 2]:.0f}°) outside "
+                f"the expected range (0° = forward, 90° = sideways)"
+            )
 
         return (
             f"Session saved — {reps} | "

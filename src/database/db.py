@@ -453,8 +453,15 @@ if __name__ == "__main__":
 #       DTW cost / (n + m));
 #   2 = time-based debounce, peak ROM from in-plane movements, DTW
 #       normalised by warping-path length, off-plane segments unscored.
-# The adaptive policy only compares sessions of the current version.
-METRICS_VERSION = 2
+#   3 = shoulder flexion only (2026-11-01): version 2 plus tracking-gap
+#       bridging (a repetition continues through a dropout of up to 3 s
+#       when the arm is still raised on return) and attempt segmentation
+#       that ends on stillness or after 3 s of tracking loss. Changes
+#       repetition counts, scored segments, peak ROM and DTW.
+# Each session stores the version of the exercise that produced it
+# (ExerciseConfig.metrics_version); the adaptive policy only compares
+# sessions of the exercise's current version. Old rows are not changed.
+METRICS_VERSION = 2   # fallback when a summary carries no version
 
 SESSION_STATUS_COMPLETE = "COMPLETE"
 SESSION_STATUS_APP_CLOSED = "INTERRUPTED_APP_CLOSED"
@@ -626,7 +633,7 @@ def _insert_session(conn, patient_id, exercise_name, stats,
         stats.get("side"),
         prescription_id,
         _json_or_none(stats.get("parameters")),
-        METRICS_VERSION,
+        stats.get("metrics_version") or METRICS_VERSION,
         stats.get("target_reps"),
         stats.get("off_plane_reps"),
         stats.get("trajectory_similarity"),
