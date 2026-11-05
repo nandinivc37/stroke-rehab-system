@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException
 
 from src.adaptation.workflow import AdaptationError
-from src.schemas.adaptation import AdaptationEvaluate, AdaptationReview
+from src.schemas.adaptation import AdaptationReview
 from src.services import adaptation_service
 from src.services.patient_service import PatientNotFoundError
 
