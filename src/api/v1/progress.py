@@ -1,7 +1,9 @@
 """Read-only patient progress and therapist dashboard endpoints."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
+from src.api.dependencies import get_db_session
 from src.services import progress_service
 from src.services.patient_service import PatientNotFoundError
 
@@ -9,8 +11,8 @@ router = APIRouter(tags=["progress and dashboard"])
 
 
 @router.get("/dashboard/summary")
-def dashboard_summary():
-    return progress_service.dashboard_summary()
+def dashboard_summary(database_session: Session = Depends(get_db_session)):
+    return progress_service.dashboard_summary(database_session)
 
 
 @router.get("/patients/{patient_id}/progress")
@@ -18,12 +20,14 @@ def patient_progress(
     patient_id: int,
     exercise_id: str | None = None,
     affected_side: str | None = None,
+    database_session: Session = Depends(get_db_session),
 ):
     try:
         return progress_service.patient_progress(
             patient_id,
             exercise_id=exercise_id,
             affected_side=affected_side,
+            database_session=database_session,
         )
     except PatientNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
