@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from src.database.models import ClinicalAssessment, ExerciseRecommendation
@@ -17,6 +17,7 @@ def create_assessment(session: Session, *, patient_id: int, payload):
         baseline_rom=payload.baseline_rom,
         restrictions=payload.restrictions,
         clinical_notes=payload.clinical_notes,
+        assessment_date=datetime.now(),
     )
     session.add(row)
     session.commit()
@@ -45,6 +46,7 @@ def create_recommendation(
         difficulty=difficulty,
         reason=reason,
         status="PENDING",
+        created_at=datetime.now(),
         exercise_id=exercise_id,
         affected_side=affected_side,
         parameters_json=json.dumps(parameters, sort_keys=True),
@@ -104,28 +106,38 @@ def review_recommendation(
     parameters: dict | None = None, reason: str | None = None,
     difficulty: str | None = None,
 ):
-    row = session.get(ExerciseRecommendation, recommendation_id)
-    if row is None:
-        return None
-    if row.status != "PENDING":
-        raise RuntimeError("Only pending recommendations can be reviewed.")
     if status not in {"APPROVED", "REJECTED"}:
         raise ValueError("Review status must be APPROVED or REJECTED.")
+    values = {
+        "status": status,
+        "reviewed_by": reviewer.strip(),
+        "review_note": note,
+    }
     if status == "APPROVED":
         if not exercise or not exercise_id or parameters is None:
             raise ValueError("Approved prescriptions require an exercise and parameters.")
-        row.exercise = exercise
-        row.exercise_id = exercise_id
-        row.affected_side = affected_side
-        row.parameters_json = json.dumps(parameters, sort_keys=True)
+        values.update({
+            "exercise": exercise,
+            "exercise_id": exercise_id,
+            "affected_side": affected_side,
+            "parameters_json": json.dumps(parameters, sort_keys=True),
+            "approved_at": datetime.now(),
+        })
         if reason is not None:
-            row.reason = reason
+            values["reason"] = reason
         if difficulty is not None:
-            row.difficulty = difficulty
-        row.approved_at = datetime.now()
-    row.status = status
-    row.reviewed_by = reviewer.strip()
-    row.review_note = note
+            values["difficulty"] = difficulty
+    result = session.execute(
+        update(ExerciseRecommendation)
+        .where(
+            ExerciseRecommendation.recommendation_id == recommendation_id,
+            ExerciseRecommendation.status == "PENDING",
+        )
+        .values(**values)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        raise RuntimeError("Only pending recommendations can be reviewed.")
     session.commit()
-    session.refresh(row)
+    row = session.get(ExerciseRecommendation, recommendation_id)
     return _recommendation_dict(row)
