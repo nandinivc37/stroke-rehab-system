@@ -873,6 +873,37 @@ before analysis).
 * **Live sessions recorded before metrics v2** (the 3 sessions in the
   development database) are kept but never used by the adaptive policy.
 
+### API authentication configuration
+
+The API now requires a bearer token for patient, assessment,
+recommendation, rehabilitation session, adaptation, progress and dashboard
+routes. The login route remains public. Administrator-only user provisioning
+is available at `POST /api/v1/auth/users`.
+
+Before starting the API, configure a private signing secret and bootstrap
+administrator credentials in the deployment environment. For example:
+
+```bash
+export NARS_JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export NARS_BOOTSTRAP_ADMIN_USERNAME="nars-admin"
+export NARS_BOOTSTRAP_ADMIN_PASSWORD="replace-with-a-unique-password-of-at-least-12-characters"
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+```
+
+Do not commit these values or put them in source control. The bootstrap
+administrator is created only when the configured username does not already
+exist. Log in with `POST /api/v1/auth/login`, then send the returned token
+as `Authorization: Bearer <access_token>`. Administrators can create
+therapist accounts; therapist accounts cannot create users.
+
+Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes, never as plaintext.
+Access tokens are signed JWTs with a 30-minute lifetime. This initial
+implementation provides role-level authorization only: it does not yet
+enforce patient-to-therapist assignment boundaries, token revocation,
+login rate limiting, password reset, or audit logging. It is not ready for
+exposure to the public internet or real patient records until those controls,
+HTTPS, secrets management, and a security review are completed.
+
 ## Experimental API backend
 
 An initial FastAPI backend is available on the `feature/api-refactor`
