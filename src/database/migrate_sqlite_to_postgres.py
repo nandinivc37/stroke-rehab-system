@@ -13,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import DateTime, Integer, MetaData, func, inspect, select, text
-from sqlalchemy.engine import Engine
 
 from src.database.migrations import SCHEMA_VERSION, schema_version
 from src.database.sqlalchemy_support import create_database_engine
