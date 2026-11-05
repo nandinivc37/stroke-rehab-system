@@ -24,8 +24,8 @@ class AssessmentRead(BaseModel):
 
 class RecommendationReview(BaseModel):
     reviewer: str = Field(min_length=1, max_length=200)
-    exercise_id: str = Field(min_length=1, max_length=100)
-    parameters: dict[str, float | int]
+    exercise_id: str | None = Field(default=None, max_length=100)
+    parameters: dict[str, float | int] | None = None
     note: str | None = None
 
 
