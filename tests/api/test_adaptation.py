@@ -53,7 +53,7 @@ def test_adaptation_evaluation_rejects_unmatched_session(api_client, monkeypatch
     ).json()
     monkeypatch.setattr(
         "src.services.adaptation_service.workflow.propose_after_session",
-        lambda *_: None,
+        lambda *_, **__: None,
     )
 
     response = api_client.post(
