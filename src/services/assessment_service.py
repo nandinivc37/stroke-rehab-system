@@ -86,6 +86,12 @@ def generate_recommendation(patient_id, assessment_id):
     return result
 
 
+
+def list_recommendations(patient_id, status=None):
+    get_patient(patient_id)
+    return db.get_recommendations(patient_id, status=status)
+
+
 def review_recommendation(recommendation_id, payload, approve=True):
     recommendation = db.get_recommendation(recommendation_id)
     if recommendation is None:
