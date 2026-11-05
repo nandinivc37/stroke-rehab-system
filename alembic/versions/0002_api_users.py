@@ -22,9 +22,7 @@ def upgrade():
         sa.Column("is_active", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("CURRENT_TIMESTAMP")),
     )
-    op.create_index("ix_api_users_username", "api_users", ["username"], unique=True)
 
 
 def downgrade():
-    op.drop_index("ix_api_users_username", table_name="api_users")
     op.drop_table("api_users")
