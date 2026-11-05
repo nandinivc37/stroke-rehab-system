@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from src.database import db
+from src.database.repositories import session_repository
 from src.exercises.analyzer import ExerciseAnalyzer
 from src.exercises.catalogue import get_exercise_config
 from src.services.patient_service import get_patient
@@ -145,7 +146,7 @@ class SessionManager:
                 "movement_active": analysis.movement_active,
             }
 
-    def complete(self, session_id):
+    def complete(self, session_id, database_session=None):
         with self._lock:
             state = self._sessions.get(session_id)
             if state is None:
@@ -157,13 +158,23 @@ class SessionManager:
 
             summary = state.analyzer.summary()
             summary["session_status"] = db.SESSION_STATUS_COMPLETE
-            session_db_id = db.save_session_summary(
-                patient_id=state.patient_id,
-                exercise_name=state.config.display_name,
-                stats=summary,
-                prescription_id=state.prescription["recommendation_id"],
-                session_status=db.SESSION_STATUS_COMPLETE,
-            )
+            if database_session is None:
+                session_db_id = db.save_session_summary(
+                    patient_id=state.patient_id,
+                    exercise_name=state.config.display_name,
+                    stats=summary,
+                    prescription_id=state.prescription["recommendation_id"],
+                    session_status=db.SESSION_STATUS_COMPLETE,
+                )
+            else:
+                session_db_id = session_repository.save_session_summary(
+                    database_session,
+                    patient_id=state.patient_id,
+                    exercise_name=state.config.display_name,
+                    stats=summary,
+                    prescription_id=state.prescription["recommendation_id"],
+                    session_status=db.SESSION_STATUS_COMPLETE,
+                )
             del self._sessions[session_id]
 
             return {
