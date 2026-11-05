@@ -153,7 +153,7 @@ def build_migration_plan(source_path, target_engine):
     """Inspect both schemas and counts without modifying either database."""
     with _readonly_connection(source_path) as source:
         _validate_source(source)
-        missing_target = REQUIRED_TABLES - _target_tables(target_engine)
+        missing_target = set(TABLE_ORDER) - _target_tables(target_engine)
         if missing_target:
             raise DataMigrationError(
                 "Target schema is incomplete. Apply the reviewed Alembic "
@@ -343,7 +343,7 @@ def verify_migration(source_path, target_engine):
         for name in TABLE_ORDER:
             table = metadata.tables[name]
             target_counts[name] = connection.execute(
-                select(__import__("sqlalchemy").func.count()).select_from(table)
+                select(func.count()).select_from(table)
             ).scalar_one()
     return {
         "source_counts": source_counts,
