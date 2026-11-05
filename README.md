@@ -754,14 +754,18 @@ The first ORM-backed vertical slice is now in place:
   affected-area persistence through SQLAlchemy.
 - `src/database/repositories/assessment_repository.py` handles clinical
   assessment, recommendation and therapist-review persistence through SQLAlchemy.
+- `src/database/repositories/session_repository.py` persists completed session
+  summaries and per-frame diagnostics in one SQLAlchemy transaction.
 - Patient, assessment and recommendation API requests receive request-scoped
   SQLAlchemy sessions. They deliberately point to the same existing SQLite file.
 - The clinical recommendation rules remain in `src/assessment/recommendation.py`;
   generating a suggestion creates only a `PENDING` recommendation. A therapist
   must approve it before it becomes an active prescription. Review transitions
   are conditional on the row still being `PENDING`.
-- Session, adaptation, progress and authentication workflows still use the
-  legacy SQLite functions.
+- Live session analysis still uses the process-local analyzer manager; its
+  completed summaries and frame logs now persist through SQLAlchemy. Session
+  start still reads the active prescription from the legacy SQLite layer.
+- Adaptation, progress and authentication workflows still use the legacy SQLite functions.
 
 **Do not configure the running API to use PostgreSQL yet.** That would split
 the patient API from the remaining SQLite-backed workflows. The runtime stays
