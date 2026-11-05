@@ -415,6 +415,34 @@ def get_latest_recommendation(patient_id):
 
 
 
+
+def record_recommendation_review(recommendation_id, status, reviewer, note=None):
+    """Persist therapist review metadata; only PENDING rows may transition."""
+    if status not in ("APPROVED", "REJECTED"):
+        raise ValueError("Review status must be APPROVED or REJECTED.")
+    reviewer = (reviewer or "").strip()
+    if not reviewer:
+        raise ValueError("A therapist/reviewer name is required.")
+
+    conn = get_connection()
+    try:
+        with conn:
+            cursor = conn.execute("""
+                UPDATE exercise_recommendations
+                SET status = ?,
+                    approved_at = CASE WHEN ? = 'APPROVED'
+                                       THEN CURRENT_TIMESTAMP
+                                       ELSE approved_at END,
+                    reviewed_by = ?,
+                    review_note = ?
+                WHERE recommendation_id = ? AND status = 'PENDING'
+            """, (status, status, reviewer, note, recommendation_id))
+            if cursor.rowcount != 1:
+                raise ValueError("Recommendation is missing or no longer pending.")
+    finally:
+        conn.close()
+
+
 def get_recommendation(recommendation_id):
     """Return one recommendation with decoded prescription parameters."""
     conn = get_connection()
