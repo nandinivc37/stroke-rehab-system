@@ -63,9 +63,23 @@ def test_create_and_list_affected_areas(api_client):
     assert created.status_code == 201
     assert created.json()["body_region"] == "Upper Limb"
 
+    second = api_client.post(
+        f"/api/v1/patients/{patient_id}/affected-areas",
+        json={
+            "side": "RIGHT",
+            "body_region": "Upper Limb",
+            "joint": "Elbow",
+            "notes": "Second synthetic area",
+        },
+    )
+    assert second.status_code == 201
+
     listed = api_client.get(f"/api/v1/patients/{patient_id}/affected-areas")
     assert listed.status_code == 200
+    assert len(listed.json()) == 2
     assert listed.json()[0]["side"] == "LEFT"
+    assert listed.json()[0]["body_region"] == "Upper Limb"
+    assert listed.json()[1]["side"] == "RIGHT"
 
 
 def test_affected_areas_for_missing_patient_returns_404(api_client):
