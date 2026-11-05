@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 from src.database.models import ExerciseRecommendation, Patient, RehabSession
 
 
+def _row_dict(row):
+    return {key: value for key, value in row.__dict__.items() if not key.startswith("_")}
+
+
 def list_patient_sessions(
     session: Session, patient_id: int, exercise_id: str | None = None,
     affected_side: str | None = None,
@@ -20,7 +24,7 @@ def list_patient_sessions(
     rows = session.scalars(
         statement.order_by(RehabSession.session_date, RehabSession.session_id)
     )
-    return [row.__dict__ | {} for row in rows]
+    return [_row_dict(row) for row in rows]
 
 
 def dashboard_counts(session: Session):
@@ -55,6 +59,6 @@ def recent_sessions(session: Session, limit: int = 10):
         result.append({
             "patient_id": row.patient_id,
             "patient_name": patient_name,
-            **{key: value for key, value in row.__dict__.items() if not key.startswith("_")},
+            **_row_dict(row),
         })
     return result
