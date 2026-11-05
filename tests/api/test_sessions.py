@@ -96,6 +96,12 @@ def test_session_accepts_no_pose_frame_and_persists_summary(api_client):
     stored = db.get_sessions(patient_id)
     assert len(stored) == 1
     assert stored[0]["session_status"] == db.SESSION_STATUS_COMPLETE
+    assert stored[0]["metrics_version"] is not None
+
+    stored_frames = db.get_session_frames(result["session_id"])
+    assert len(stored_frames) == 1
+    assert stored_frames[0]["frame_index"] == 0
+    assert stored_frames[0]["status"] == "no_pose"
 
 
 def test_session_rejects_non_increasing_timestamps(api_client):
