@@ -1,8 +1,10 @@
 """ORM mappings for the NARS clinical and rehabilitation data schema.
 
-These mappings describe the PostgreSQL-ready schema. They are not yet used
-by the legacy SQLite repositories or API services. Preserve NULL values for
-historical measurements that were not recorded.
+These mappings describe the shared SQLite/PostgreSQL schema during the staged
+migration. Patient, affected-area, clinical-assessment and recommendation API
+persistence now use SQLAlchemy repositories against the existing SQLite file.
+Other application workflows remain on the legacy SQLite data-access layer.
+Preserve NULL values for historical measurements that were not recorded.
 """
 
 from datetime import datetime
