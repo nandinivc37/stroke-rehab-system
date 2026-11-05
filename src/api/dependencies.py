@@ -1,6 +1,6 @@
 """Authentication and role-based authorization dependencies."""
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.services.auth_service import AuthenticationError, decode_token
@@ -36,3 +36,18 @@ def require_roles(*allowed_roles):
             )
         return user
     return dependency
+
+
+def get_db_session(request: Request):
+    """Yield a request-scoped SQLAlchemy session from the app-owned factory."""
+    factory = getattr(request.app.state, "database_session_factory", None)
+    if factory is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database session factory is not initialized.",
+        )
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
