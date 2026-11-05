@@ -7,7 +7,7 @@ on:
     paths:
       - "src/database/**"
       - "alembic/**"
-      - "tests/api/**"
+      - "tests/**"
       - "requirements-api.txt"
       - ".github/workflows/api-database-tests.yml"
   pull_request:
