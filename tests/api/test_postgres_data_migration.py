@@ -76,6 +76,9 @@ def test_full_synthetic_sqlite_history_migrates_to_postgres(tmp_path, monkeypatc
         assert result["snapshot_sha256"]
         assert Path(result["snapshot_path"]).is_file()
 
+        verification = verify_migration(source_path, target_engine)
+        assert verification["matches"] is True
+
         with target_engine.begin() as connection:
             patient = connection.execute(text(
                 "SELECT name, age FROM patients WHERE patient_id = 101"
@@ -102,7 +105,5 @@ def test_full_synthetic_sqlite_history_migrates_to_postgres(tmp_path, monkeypatc
             )).scalar_one()
             assert inserted_id == 102
 
-        verification = verify_migration(source_path, target_engine)
-        assert verification["matches"] is False
     finally:
         target_engine.dispose()
