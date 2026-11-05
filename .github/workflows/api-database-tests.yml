@@ -62,7 +62,7 @@ jobs:
           python -m pip install -r requirements-api.txt pytest
 
       - name: Validate Python syntax
-        run: python -m compileall -q src/database alembic tests/api
+        run: python -m compileall -q src/database alembic tests/api tests/database
 
       - name: Run API and database foundation tests
-        run: python -m pytest -q tests/api
+        run: python -m pytest -q tests/api tests/database
