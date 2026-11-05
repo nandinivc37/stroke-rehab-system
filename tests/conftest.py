@@ -43,7 +43,12 @@ def non_blocking_message_boxes(monkeypatch):
     instead so tests can assert on what the user would have been told.
     """
 
-    from PyQt6.QtWidgets import QMessageBox
+    try:
+        from PyQt6.QtWidgets import QMessageBox
+    except ImportError:
+        # API/database-only test environments intentionally omit the
+        # desktop UI dependency. Qt-specific tests install PyQt6.
+        return []
 
     shown = []
 
