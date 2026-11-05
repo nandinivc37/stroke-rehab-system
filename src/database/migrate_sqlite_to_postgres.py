@@ -221,9 +221,7 @@ def _coerce_datetime(value):
 def _prepare_row(row, table):
     values = dict(row)
     for column in table.columns:
-        if column.name in values and isinstance(column.type, __import__(
-            "sqlalchemy"
-        ).DateTime):
+        if column.name in values and isinstance(column.type, DateTime):
             values[column.name] = _coerce_datetime(values[column.name])
     return values
 
