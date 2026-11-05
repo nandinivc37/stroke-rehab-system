@@ -38,12 +38,14 @@ def patient_progress_trends(
     patient_id: int,
     exercise_id: str | None = None,
     affected_side: str | None = None,
+    database_session: Session = Depends(get_db_session),
 ):
     try:
         result = progress_service.patient_progress(
             patient_id,
             exercise_id=exercise_id,
             affected_side=affected_side,
+            database_session=database_session,
         )
     except PatientNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
