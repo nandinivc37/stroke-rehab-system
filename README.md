@@ -772,8 +772,23 @@ functions. No PostgreSQL schema revision or data-copy command has been
 created yet, and setting this variable does not switch the running NARS
 application to PostgreSQL.
 
-The next migration stages are to define ORM models for the existing
-patient, assessment, prescription, session, frame and adaptation tables;
+The first ORM mappings are now defined in `src/database/models.py` for
+patients, affected areas, clinical assessments, recommendations, sessions,
+per-frame logs and adaptation decisions. The initial explicit Alembic
+revision is `alembic/versions/0001_nars_initial.py`. It creates the target
+schema for a new, empty database; it does not import or overwrite existing
+records. Historical session measurements remain nullable.
+
+The mappings and initial revision are a schema foundation, not a completed
+production migration. They have not yet been executed against PostgreSQL,
+and the existing API repositories still use SQLite. Before switching any
+deployment, validate the revision against a disposable PostgreSQL database,
+then implement and test a separate SQLite export/import process with
+foreign-key, row-count, key, and selected-value verification.
+
+The next migration stages are to implement SQLAlchemy repositories behind
+the existing service interfaces; and add a tested, verified
+SQLite-to-PostgreSQL import with row-count and value comparisons.
 write and review explicit Alembic revisions; implement SQLAlchemy
 repositories behind the existing service interfaces; and add a tested,
 verified SQLite-to-PostgreSQL import with row-count and value comparisons.
