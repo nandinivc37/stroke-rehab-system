@@ -19,6 +19,7 @@ def test_orm_metadata_creates_all_core_nars_tables(tmp_path):
         "sessions",
         "session_frames",
         "adaptation_decisions",
+        "api_users",
     }
     assert expected.issubset(set(inspector.get_table_names()))
     engine.dispose()
@@ -45,3 +46,15 @@ def test_session_frame_log_keeps_composite_primary_key():
     table = Base.metadata.tables["session_frames"]
     primary_key = {column.name for column in table.primary_key.columns}
     assert primary_key == {"session_id", "frame_index"}
+
+
+
+def test_api_users_enforce_roles_and_case_insensitive_usernames():
+    table = Base.metadata.tables["api_users"]
+    assert any(
+        constraint.name == "ck_api_users_role"
+        for constraint in table.constraints
+    )
+    assert "uq_api_users_username_lower" in {
+        index.name for index in table.indexes
+    }
