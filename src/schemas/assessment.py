@@ -22,6 +22,10 @@ class AssessmentRead(BaseModel):
     assessment_date: str | None = None
 
 
+class RecommendationGenerate(BaseModel):
+    assessment_id: int = Field(gt=0)
+
+
 class RecommendationReview(BaseModel):
     reviewer: str = Field(min_length=1, max_length=200)
     exercise_id: str | None = Field(default=None, max_length=100)
