@@ -100,6 +100,8 @@ def review_recommendation(recommendation_id, payload, approve=True):
         )
         return db.get_recommendation(recommendation_id)
 
+    if not payload.exercise_id or payload.parameters is None:
+        raise ValueError("Exercise and starting parameters are required for approval.")
     config = get_exercise_config(payload.exercise_id)
     if config is None:
         raise ValueError("Selected exercise is not implemented.")
