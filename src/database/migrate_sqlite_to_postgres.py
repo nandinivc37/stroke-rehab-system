@@ -12,7 +12,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import MetaData, Table, inspect, select, text
+from sqlalchemy import DateTime, Integer, MetaData, func, inspect, select, text
 from sqlalchemy.engine import Engine
 
 from src.database.migrations import SCHEMA_VERSION, schema_version
@@ -127,7 +127,7 @@ def _validate_target_empty(engine, metadata):
         for name in TABLE_ORDER:
             table = metadata.tables[name]
             count = connection.execute(
-                select(__import__("sqlalchemy").func.count()).select_from(table)
+                select(func.count()).select_from(table)
             ).scalar_one()
             if count:
                 nonempty.append(f"{name} ({count} rows)")
@@ -225,7 +225,7 @@ def _reset_postgres_sequences(connection, metadata):
         if len(primary_key) != 1:
             continue
         column = primary_key[0]
-        if not isinstance(column.type, __import__("sqlalchemy").Integer):
+        if not isinstance(column.type, Integer):
             continue
         # Names are restricted to the fixed TABLE_ORDER allowlist.
         connection.execute(
@@ -276,15 +276,30 @@ def apply_migration(source_path, target_engine, backup_dir):
                             connection.execute(table.insert(), batch)
 
                 _reset_postgres_sequences(connection, metadata)
+                source_counts = {
+                    name: source.execute(
+                        f'SELECT COUNT(*) FROM "{name}"'
+                    ).fetchone()[0]
+                    for name in TABLE_ORDER
+                }
+                target_counts = {
+                    name: connection.execute(
+                        select(func.count()).select_from(metadata.tables[name])
+                    ).scalar_one()
+                    for name in TABLE_ORDER
+                }
+                verification = {
+                    "source_counts": source_counts,
+                    "target_counts": target_counts,
+                    "matches": source_counts == target_counts,
+                }
+                if not verification["matches"]:
+                    raise DataMigrationError(
+                        "Post-import row-count verification failed; "
+                        "the PostgreSQL transaction will be rolled back. "
+                        + json.dumps(verification, sort_keys=True)
+                    )
 
-        verification = verify_migration(snapshot, target_engine)
-        if not verification["matches"]:
-            raise DataMigrationError(
-                "Post-import verification failed. Target transaction has "
-                "already committed; do not use it. Restore/drop the target "
-                "and investigate before retrying. Details: "
-                + json.dumps(verification, sort_keys=True)
-            )
         return {
             "plan": plan,
             "snapshot_path": str(snapshot),
