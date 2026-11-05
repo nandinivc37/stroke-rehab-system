@@ -28,9 +28,10 @@ TABLE_ORDER = (
     "sessions",
     "session_frames",
     "adaptation_decisions",
+    "api_users",
 )
 
-REQUIRED_TABLES = set(TABLE_ORDER)
+REQUIRED_TABLES = set(TABLE_ORDER) - {"api_users"}
 
 
 class DataMigrationError(RuntimeError):
@@ -69,7 +70,14 @@ def _validate_source(conn):
             f"{SCHEMA_VERSION}. Run the existing SQLite schema migration "
             "and review its verified backup before exporting."
         )
-    missing = REQUIRED_TABLES - _source_tables(conn)
+    source_tables = _source_tables(conn)
+    missing = REQUIRED_TABLES - source_tables
+    unsupported = source_tables - set(TABLE_ORDER)
+    if unsupported:
+        raise DataMigrationError(
+            "Source contains tables that are not mapped for migration: "
+            + ", ".join(sorted(unsupported))
+        )
     if missing:
         raise DataMigrationError(
             "Required source tables are missing: " + ", ".join(sorted(missing))
@@ -94,7 +102,10 @@ def _load_target_metadata(engine):
 
 def _validate_schema_compatibility(source_conn, target_metadata):
     problems = []
+    source_tables = _source_tables(source_conn)
     for name in TABLE_ORDER:
+        if name not in source_tables:
+            continue
         source_columns = {
             row[1] for row in source_conn.execute(f'PRAGMA table_info("{name}")')
         }
@@ -156,7 +167,7 @@ def build_migration_plan(source_path, target_engine):
             "target_dialect": target_engine.dialect.name,
             "sqlite_schema_version": schema_version(source),
             "row_counts": _row_counts(source),
-            "tables_to_copy": list(TABLE_ORDER),
+            "tables_to_copy": [name for name in TABLE_ORDER if name in _source_tables(source)],
             "target_is_empty": True,
             "foreign_key_violations": 0,
         }
@@ -255,7 +266,10 @@ def apply_migration(source_path, target_engine, backup_dir):
         with _readonly_connection(snapshot) as source:
             metadata = _load_target_metadata(target_engine)
             with target_engine.begin() as connection:
+                source_tables = _source_tables(source)
                 for name in TABLE_ORDER:
+                    if name not in source_tables:
+                        continue
                     source_rows = source.execute(
                         f'SELECT * FROM "{name}" ORDER BY '
                         + ", ".join(
@@ -277,9 +291,10 @@ def apply_migration(source_path, target_engine, backup_dir):
 
                 _reset_postgres_sequences(connection, metadata)
                 source_counts = {
-                    name: source.execute(
-                        f'SELECT COUNT(*) FROM "{name}"'
-                    ).fetchone()[0]
+                    name: (
+                        source.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                        if name in source_tables else 0
+                    )
                     for name in TABLE_ORDER
                 }
                 target_counts = {
@@ -316,7 +331,10 @@ def verify_migration(source_path, target_engine):
     """Compare per-table row counts after import; no source writes occur."""
     with _readonly_connection(source_path) as source:
         source_counts = {
-            name: source.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+            name: (
+                source.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                if name in _source_tables(source) else 0
+            )
             for name in TABLE_ORDER
         }
     metadata = _load_target_metadata(target_engine)
