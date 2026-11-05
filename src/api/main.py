@@ -8,6 +8,7 @@ from src.api.v1.assessments import router as assessments_router
 from src.api.v1.recommendations import router as recommendations_router
 from src.api.v1.sessions import router as sessions_router
 from src.api.v1.adaptation import router as adaptation_router
+from src.api.v1.progress import router as progress_router
 
 app = FastAPI(
     title="NARS API",
@@ -24,6 +25,7 @@ app.include_router(assessments_router, prefix="/api/v1")
 app.include_router(recommendations_router, prefix="/api/v1")
 app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(adaptation_router, prefix="/api/v1")
+app.include_router(progress_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["health"], include_in_schema=False)
