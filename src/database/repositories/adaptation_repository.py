@@ -153,6 +153,29 @@ def get_adaptation_proposal(session: Session, proposal_id: int):
 def review_proposal(session: Session, proposal_id: int, *, status: str, reviewer: str, note: str = ""):
     if status not in {"APPROVED", "REJECTED"}:
         raise ValueError("Review status must be APPROVED or REJECTED.")
+    proposal = get_adaptation_proposal(session, proposal_id)
+    if proposal is None:
+        raise RuntimeError("Adaptation proposal was not found.")
+    if proposal["status"] != "PENDING":
+        raise RuntimeError("Adaptation proposal is no longer pending.")
+    if status == "APPROVED":
+        # Recheck the active prescription inside the same database transaction.
+        # PostgreSQL locks the current approved row while the transition occurs.
+        active = session.scalars(
+            select(ExerciseRecommendation)
+            .where(
+                ExerciseRecommendation.patient_id == proposal["patient_id"],
+                ExerciseRecommendation.status == "APPROVED",
+            )
+            .order_by(ExerciseRecommendation.recommendation_id.desc())
+            .limit(1)
+            .with_for_update()
+        ).first()
+        active_id = active.recommendation_id if active is not None else None
+        if active_id != proposal["previous_recommendation_id"]:
+            raise RuntimeError(
+                "The prescription this proposal was based on is no longer active."
+            )
     values = {"status": status, "reviewed_by": reviewer.strip(), "review_note": note}
     if status == "APPROVED":
         values["approved_at"] = datetime.now()
