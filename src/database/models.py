@@ -8,12 +8,14 @@ historical measurements that were not recorded.
 from datetime import datetime
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
     Text,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -156,11 +158,17 @@ class ApiUser(Base):
     __tablename__ = "api_users"
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+ApiUser.__table__.append_constraint(
+    CheckConstraint("role IN ('therapist', 'admin')", name="ck_api_users_role")
+)
+Index("uq_api_users_username_lower", func.lower(ApiUser.username), unique=True)
 
 
 Index("ix_sessions_patient_date", RehabSession.patient_id, RehabSession.session_date)
