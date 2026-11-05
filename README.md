@@ -873,6 +873,51 @@ before analysis).
 * **Live sessions recorded before metrics v2** (the 3 sessions in the
   development database) are kept but never used by the adaptive policy.
 
+## Experimental API backend
+
+An initial FastAPI backend is available on the `feature/api-refactor`
+branch. It exposes patient management, clinical assessment, therapist
+recommendation review, and a landmark-based rehabilitation session flow.
+
+Install the API dependencies in addition to the application dependencies:
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-api.txt
+uvicorn src.api.main:app --reload
+```
+
+Open `http://127.0.0.1:8000/docs` for the interactive API documentation.
+The health endpoint is `GET /api/v1/health`.
+
+### Landmark-based session flow
+
+1. Create a session with `POST /api/v1/sessions`. A therapist-approved
+   active prescription is required.
+2. Send each processed pose frame to
+   `POST /api/v1/sessions/{session_id}/frames`.
+3. Finish and persist the analysis with
+   `POST /api/v1/sessions/{session_id}/complete`.
+4. Cancel an unfinished in-memory session with
+   `DELETE /api/v1/sessions/{session_id}`.
+
+The frame endpoint accepts 33 MediaPipe pose landmarks and optional
+33 world landmarks, plus a client timestamp and image dimensions.
+Camera capture and MediaPipe inference remain on the client; the API
+does not attempt to open a webcam attached to the server. The backend
+runs the existing `ExerciseAnalyzer` and stores the same versioned
+session summary and frame diagnostics used by the desktop application.
+
+**Deployment limitations:** this session manager currently stores live
+analyzer state in process memory. Run a single API worker for local
+prototype testing; sessions will be lost if the process restarts, and
+this implementation is not ready for multi-worker or clinical deployment.
+A shared session store, authentication/authorization, transport security,
+deployment configuration, and end-to-end client testing are still
+required. Webcam and clinical validation remain incomplete, and the
+existing exercise metrics and thresholds are not clinically validated.
+Do not send identifiable patient data to an unprotected deployment.
+
 ## Project layout
 
 ```
