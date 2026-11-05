@@ -443,6 +443,29 @@ def record_recommendation_review(recommendation_id, status, reviewer, note=None)
         conn.close()
 
 
+
+def get_recommendations(patient_id, status=None):
+    """List a patient's recommendations, optionally filtered by status."""
+    query = "SELECT * FROM exercise_recommendations WHERE patient_id = ?"
+    params = [patient_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY recommendation_id DESC"
+
+    conn = get_connection()
+    try:
+        rows = _dict_rows(conn.execute(query, params))
+        for row in rows:
+            row["parameters"] = (
+                json.loads(row["parameters_json"])
+                if row.get("parameters_json") else {}
+            )
+        return rows
+    finally:
+        conn.close()
+
+
 def get_recommendation(recommendation_id):
     """Return one recommendation with decoded prescription parameters."""
     conn = get_connection()
