@@ -36,6 +36,21 @@ def database_session():
 
 
 def _record(session, patient_id, assessment_id, previous_id=11, target=8):
+    if session.get(ExerciseRecommendation, previous_id) is None:
+        session.add(ExerciseRecommendation(
+            recommendation_id=previous_id,
+            patient_id=patient_id,
+            assessment_id=assessment_id,
+            exercise="Previous Approved Exercise",
+            difficulty="Level 1",
+            reason="Synthetic prior prescription",
+            status="APPROVED",
+            exercise_id="shoulder_flexion",
+            affected_side="LEFT",
+            parameters_json='{"target_reps": 5}',
+            source="ASSESSMENT",
+        ))
+        session.commit()
     return adaptation_repository.record_decision(
         session,
         patient_id=patient_id,
