@@ -6,6 +6,9 @@ on:
       - feature/api-refactor
     paths:
       - "src/database/**"
+      - "src/api/**"
+      - "src/services/**"
+      - "src/schemas/**"
       - "alembic/**"
       - "tests/**"
       - "requirements-api.txt"
