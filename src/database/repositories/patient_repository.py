@@ -30,14 +30,14 @@ def create_patient(session: Session, *, name, age=None, gender=None, therapist=N
 
 
 def list_affected_areas(session: Session, patient_id: int):
-    areas = session.scalars(
+    areas = list(session.scalars(
         select(AffectedArea)
         .where(AffectedArea.patient_id == patient_id)
         .order_by(AffectedArea.area_id)
-    )
+    ))
     for area in areas:
         area.body_region = normalize_body_region(area.body_region, area.joint)
-    return list(areas)
+    return areas
 
 
 def create_affected_area(
