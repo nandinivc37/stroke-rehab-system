@@ -1,7 +1,9 @@
 """Landmark-streaming rehabilitation session endpoints."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
+from src.api.dependencies import get_db_session
 from src.schemas.session import (
     FrameAnalysisRead,
     PoseFrameCreate,
@@ -46,9 +48,9 @@ def submit_pose_frame(session_id: str, payload: PoseFrameCreate):
     "/sessions/{session_id}/complete",
     response_model=SessionCompleteRead,
 )
-def complete_session(session_id: str):
+def complete_session(session_id: str, database_session: Session = Depends(get_db_session)):
     try:
-        return session_service.session_manager.complete(session_id)
+        return session_service.session_manager.complete(session_id, database_session)
     except session_service.SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except session_service.SessionValidationError as exc:
