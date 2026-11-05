@@ -34,8 +34,12 @@ def test_alembic_upgrade_head_creates_versioned_nars_schema(tmp_path, monkeypatc
         ).scalar_one()
     assert version == "0002_api_users"
 
-    api_user_indexes = {
-        index["name"] for index in inspector.get_indexes("api_users")
-    }
-    assert "uq_api_users_username_lower" in api_user_indexes
+    with engine.connect() as connection:
+        username_index_sql = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'uq_api_users_username_lower'"
+            )
+        ).scalar_one()
+    assert "lower(username)" in username_index_sql
     engine.dispose()
