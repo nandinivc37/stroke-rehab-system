@@ -1,12 +1,11 @@
 """Unit tests for SQLAlchemy adaptive decision and review persistence."""
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.database.models import (
     AdaptationDecision,
-    ApiUser,
     Base,
     ClinicalAssessment,
     ExerciseRecommendation,
