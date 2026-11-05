@@ -7,6 +7,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from src.database.sqlalchemy_support import Base
+from src.database import models  # noqa: F401 - register ORM tables with metadata
 
 config = context.config
 
