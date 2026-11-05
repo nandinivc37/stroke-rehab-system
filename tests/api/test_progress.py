@@ -40,52 +40,40 @@ def test_progress_endpoints_return_404_for_unknown_patient(api_client):
     ).status_code == 404
 
 
-def test_progress_trends_preserve_legacy_group_separation(api_client, monkeypatch):
-    from src.services import progress_service
+def test_progress_trends_preserve_legacy_group_separation(api_client):
+    from src.database import db
 
     patient = api_client.post(
         "/api/v1/patients", json={"name": "Synthetic Trend Patient"}
     ).json()
     patient_id = patient["patient_id"]
 
-    legacy = {
-        "session_id": 3,
-        "session_date": "2026-09-01",
-        "exercise": "Shoulder Flexion",
-        "exercise_id": None,
-        "affected_side": None,
-        "metrics_version": None,
-        "reps": 4,
-        "target_reps": None,
-        "max_angle": 65.0,
-        "peak_rom": None,
-        "trajectory_similarity": None,
-        "dtw_similarity": None,
-        "valid_segments": None,
-        "frames_total": None,
-        "frames_measured": None,
-        "mean_fps": None,
-        "session_status": "COMPLETE",
-    }
-    current = {
-        **legacy,
-        "session_id": 4,
-        "session_date": "2026-10-01",
-        "exercise_id": "shoulder_flexion",
-        "affected_side": "LEFT",
-        "metrics_version": 2,
-        "peak_rom": 70.0,
-        "trajectory_similarity": 82.0,
-        "dtw_similarity": 90.0,
-        "frames_total": 100,
-        "frames_measured": 90,
-    }
-    monkeypatch.setattr(
-        progress_service.db,
-        "get_sessions",
-        lambda requested_patient, **kwargs: [legacy, current]
-        if requested_patient == patient_id else [],
-    )
+    conn = db.get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO sessions(
+                patient_id, exercise, reps, max_angle, session_date,
+                exercise_id, affected_side, metrics_version, peak_rom,
+                trajectory_similarity, dtw_similarity, frames_total,
+                frames_measured, session_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    patient_id, "Shoulder Flexion", 4, 65.0, "2026-09-01",
+                    None, None, None, None, None, None, None, None, "COMPLETE",
+                ),
+                (
+                    patient_id, "Shoulder Flexion", 4, 70.0, "2026-10-01",
+                    "shoulder_flexion", "LEFT", 2, 70.0, 82.0, 90.0,
+                    100, 90, "COMPLETE",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     response = api_client.get(
         f"/api/v1/patients/{patient_id}/progress/trends"
