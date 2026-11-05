@@ -47,30 +47,3 @@ def generate_recommendation(patient_id: int, payload: dict):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-
-@router.post("/../recommendations/{recommendation_id}/approve")
-def approve_recommendation(recommendation_id: int, payload: RecommendationReview):
-    try:
-        return assessment_service.review_recommendation(
-            recommendation_id, payload, approve=True
-        )
-    except assessment_service.RecommendationNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except assessment_service.RecommendationConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post("/../recommendations/{recommendation_id}/reject")
-def reject_recommendation(recommendation_id: int, payload: RecommendationReview):
-    try:
-        return assessment_service.review_recommendation(
-            recommendation_id, payload, approve=False
-        )
-    except assessment_service.RecommendationNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except assessment_service.RecommendationConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
