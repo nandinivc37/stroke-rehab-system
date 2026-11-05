@@ -25,7 +25,23 @@ permissions:
 jobs:
   api-database-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nars
+          POSTGRES_PASSWORD: nars_test_password
+          POSTGRES_DB: nars_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nars -d nars_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NARS_TEST_POSTGRES_URL: postgresql+psycopg://nars:nars_test_password@localhost:5432/nars_test
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -43,9 +59,7 @@ jobs:
           python -m pip install -r requirements-api.txt pytest
 
       - name: Validate Python syntax
-        run: |
-          python -m compileall -q src/database alembic tests/api
+        run: python -m compileall -q src/database alembic tests/api
 
       - name: Run API and database foundation tests
-        run: |
-          python -m pytest -q tests/api
+        run: python -m pytest -q tests/api
