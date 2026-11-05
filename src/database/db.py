@@ -414,6 +414,27 @@ def get_latest_recommendation(patient_id):
     return recommendation
 
 
+
+def get_recommendation(recommendation_id):
+    """Return one recommendation with decoded prescription parameters."""
+    conn = get_connection()
+    try:
+        rows = _dict_rows(conn.execute(
+            "SELECT * FROM exercise_recommendations WHERE recommendation_id = ?",
+            (recommendation_id,),
+        ))
+        if not rows:
+            return None
+        row = rows[0]
+        row["parameters"] = (
+            json.loads(row["parameters_json"])
+            if row.get("parameters_json") else {}
+        )
+        return row
+    finally:
+        conn.close()
+
+
 def get_latest_approved_exercise(patient_id):
     conn = get_connection()
     cursor = conn.cursor()
