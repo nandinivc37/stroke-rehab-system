@@ -890,6 +890,26 @@ uvicorn src.api.main:app --reload
 Open `http://127.0.0.1:8000/docs` for the interactive API documentation.
 The health endpoint is `GET /api/v1/health`.
 
+### Progress and therapist dashboard endpoints
+
+The backend also exposes read-only progress views using the existing
+history grouping and metric-version rules:
+
+- `GET /api/v1/dashboard/summary` returns stored dashboard counts and
+  recent session summaries.
+- `GET /api/v1/patients/{patient_id}/progress` returns session history
+  and groups sessions by exercise, affected side and compatible metric
+  version. Optional `exercise_id` and `affected_side` query parameters
+  narrow the result.
+- `GET /api/v1/patients/{patient_id}/progress/trends` returns chart-ready
+  points for repetitions, peak range, movement score, DTW shape similarity
+  and pose coverage.
+
+Legacy sessions and newer metric versions remain in separate groups.
+Missing measurements remain null rather than being represented as zero.
+Experimental posture and compensation summaries are labelled as
+unvalidated and are not used by the adaptive policy.
+
 ### Adaptive decision-support flow
 
 After a completed session has been persisted, the client can explicitly
