@@ -32,7 +32,7 @@ def create_patient(payload: PatientCreate, session: Session = Depends(get_db_ses
 @router.get("/{patient_id}", response_model=PatientRead)
 def get_patient(patient_id: int, session: Session = Depends(get_db_session)):
     try:
-        return patient_service.get_patient(session, patient_id)
+        return patient_service.get_patient(patient_id, session=session)
     except PatientNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
