@@ -20,6 +20,7 @@ def _make_source(path):
         connection.execute(
             text("INSERT INTO patients(patient_id, name) VALUES (101, 'Synthetic Patient')")
         )
+        connection.execute(text("INSERT INTO api_users(user_id, username, password_hash, role, is_active) VALUES (7, 'nars-admin', 'pbkdf2_sha256$test', 'admin', 1)"))
         connection.execute(text("PRAGMA user_version = 3"))
     engine.dispose()
 
@@ -40,6 +41,7 @@ def test_migration_plan_is_read_only_and_reports_source_counts(tmp_path):
 
     assert plan["target_is_empty"] is True
     assert plan["row_counts"]["patients"] == 1
+    assert plan["row_counts"]["api_users"] == 1
     assert plan["tables_to_copy"] == [
         "patients",
         "affected_areas",
@@ -48,6 +50,7 @@ def test_migration_plan_is_read_only_and_reports_source_counts(tmp_path):
         "sessions",
         "session_frames",
         "adaptation_decisions",
+        "api_users",
     ]
     with sqlite3.connect(source) as connection:
         assert connection.execute(
