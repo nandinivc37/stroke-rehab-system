@@ -738,6 +738,49 @@ is the accuracy of always predicting "No Compensation".
   Any further use requires Step B and a separate decision.
 <!-- /STEP_A_RESULTS -->
 
+### Staged SQLAlchemy/PostgreSQL foundation (not yet the active data layer)
+
+The existing application database layer in `src/database/db.py` remains
+SQLite-specific and continues to use the verified additive migration and
+backup process in `src/database/migrations.py`. Do not point that legacy
+layer at PostgreSQL: its SQL statements, placeholders, schema operations
+and row handling have not been ported.
+
+A separate SQLAlchemy foundation has been added for the gradual repository
+migration:
+
+- `src/database/sqlalchemy_support.py` reads `NARS_DATABASE_URL`, creates
+  SQLAlchemy engines and session factories, and defaults to the existing
+  local SQLite file.
+- `alembic.ini` and `alembic/env.py` configure Alembic for future ORM
+  schema revisions.
+- `requirements-api.txt` includes SQLAlchemy, Alembic and the Psycopg 3
+  PostgreSQL driver.
+
+For a PostgreSQL development environment, install the API dependencies
+and configure a database URL such as:
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-api.txt
+export NARS_DATABASE_URL="postgresql+psycopg://nars:password@localhost:5432/nars"
+```
+
+This setting is currently consumed by the new SQLAlchemy foundation and
+Alembic only. Existing API services still use the SQLite data-access
+functions. No PostgreSQL schema revision or data-copy command has been
+created yet, and setting this variable does not switch the running NARS
+application to PostgreSQL.
+
+The next migration stages are to define ORM models for the existing
+patient, assessment, prescription, session, frame and adaptation tables;
+write and review explicit Alembic revisions; implement SQLAlchemy
+repositories behind the existing service interfaces; and add a tested,
+verified SQLite-to-PostgreSQL import with row-count and value comparisons.
+Do not run `alembic upgrade head` against a production database until
+those reviewed revisions exist. Keep a verified, restorable database
+backup before any data migration.
+
 ## Database
 
 SQLite at `data/rehab.db` (not in git). Schema upgrades are additive and
