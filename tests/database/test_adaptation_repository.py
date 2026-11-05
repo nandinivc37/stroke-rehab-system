@@ -125,7 +125,7 @@ def test_stale_proposal_cannot_be_approved_after_prescription_changes(database_s
     session, patient_id, assessment_id = database_session
     _, proposal_id = _record(session, patient_id, assessment_id)
     session.add(ExerciseRecommendation(
-        recommendation_id=12,
+        recommendation_id=99,
         patient_id=patient_id,
         assessment_id=assessment_id,
         exercise="Replacement Approved Exercise",
