@@ -765,7 +765,13 @@ The first ORM-backed vertical slice is now in place:
 - Live session analysis still uses the process-local analyzer manager; its
   completed summaries and frame logs now persist through SQLAlchemy. Session
   start still reads the active prescription from the legacy SQLite layer.
-- Adaptation, progress and authentication workflows still use the legacy SQLite functions.
+- Adaptive decision records, pending proposals, superseding older proposals,
+  decision history and therapist review transitions now use
+  `src/database/repositories/adaptation_repository.py` for API requests.
+  The established controller/policy calculations remain unchanged, and
+  approval still rechecks that the proposal original prescription is active.
+- Progress analytics and authentication workflows still use the legacy
+  SQLite functions.
 
 **Do not configure the running API to use PostgreSQL yet.** That would split
 the patient API from the remaining SQLite-backed workflows. The runtime stays
