@@ -746,16 +746,16 @@ backup process in `src/database/migrations.py`. Do not point that legacy
 layer at PostgreSQL: its SQL statements, placeholders, schema operations
 and row handling have not been ported.
 
-A separate SQLAlchemy foundation has been added for the gradual repository
-migration:
+The SQLAlchemy foundation is separate:
 
 - `src/database/sqlalchemy_support.py` reads `NARS_DATABASE_URL`, creates
   SQLAlchemy engines and session factories, and defaults to the existing
   local SQLite file.
-- `alembic.ini` and `alembic/env.py` configure Alembic for future ORM
-  schema revisions.
-- `requirements-api.txt` includes SQLAlchemy, Alembic and the Psycopg 3
-  PostgreSQL driver.
+- `src/database/models.py` maps patients, affected areas, assessments,
+  recommendations, sessions, frame logs, adaptation decisions and API users.
+- `alembic/versions/0001_nars_initial.py` creates the initial NARS schema.
+- `alembic/versions/0002_api_users.py` adds therapist/admin API accounts.
+- `requirements-api.txt` includes SQLAlchemy, Alembic and Psycopg 3.
 
 For a PostgreSQL development environment, install the API dependencies
 and configure a database URL such as:
@@ -764,37 +764,46 @@ and configure a database URL such as:
 pip install -r requirements.txt
 pip install -r requirements-api.txt
 export NARS_DATABASE_URL="postgresql+psycopg://nars:password@localhost:5432/nars"
+alembic upgrade head
 ```
 
-This setting is currently consumed by the new SQLAlchemy foundation and
-Alembic only. Existing API services still use the SQLite data-access
-functions. No PostgreSQL schema revision or data-copy command has been
-created yet, and setting this variable does not switch the running NARS
-application to PostgreSQL.
+The Alembic revisions create an empty target schema; they do not copy data.
+The existing API services still use the SQLite data-access functions, so
+setting `NARS_DATABASE_URL` does not yet switch the running application
+to PostgreSQL.
 
-The first ORM mappings are now defined in `src/database/models.py` for
-patients, affected areas, clinical assessments, recommendations, sessions,
-per-frame logs and adaptation decisions. The initial explicit Alembic
-revision is `alembic/versions/0001_nars_initial.py`. It creates the target
-schema for a new, empty database; it does not import or overwrite existing
-records. Historical session measurements remain nullable.
+#### SQLite-to-PostgreSQL migration utility
 
-The mappings and initial revision are a schema foundation, not a completed
-production migration. They have not yet been executed against PostgreSQL,
-and the existing API repositories still use SQLite. Before switching any
-deployment, validate the revision against a disposable PostgreSQL database,
-then implement and test a separate SQLite export/import process with
-foreign-key, row-count, key, and selected-value verification.
+`src/database/migrate_sqlite_to_postgres.py` provides a conservative
+migration path. It opens the source read-only, validates its schema version
+and foreign keys, rejects unmapped source tables or schema differences,
+creates an integrity-checked SQLite snapshot, requires an empty PostgreSQL
+target, preserves primary keys, and checks per-table row counts inside the
+PostgreSQL transaction before commit. API accounts are copied when the
+source database contains the optional `api_users` table.
 
-The next migration stages are to implement SQLAlchemy repositories behind
-the existing service interfaces; and add a tested, verified
-SQLite-to-PostgreSQL import with row-count and value comparisons.
-write and review explicit Alembic revisions; implement SQLAlchemy
-repositories behind the existing service interfaces; and add a tested,
-verified SQLite-to-PostgreSQL import with row-count and value comparisons.
-Do not run `alembic upgrade head` against a production database until
-those reviewed revisions exist. Keep a verified, restorable database
-backup before any data migration.
+The default command is a dry run and never copies data:
+
+```bash
+python -m src.database.migrate_sqlite_to_postgres
+```
+
+After reviewing the dry-run report and confirming a restorable backup,
+explicitly apply the import:
+
+```bash
+python -m src.database.migrate_sqlite_to_postgres --apply
+```
+
+Set `NARS_DATABASE_URL` to the PostgreSQL target before either command.
+The apply mode refuses non-PostgreSQL targets and non-empty NARS tables.
+It retains the verified source snapshot for audit/recovery. Do not run an
+import against production until the migration has been tested against a
+disposable PostgreSQL instance and the resulting records have been reviewed.
+
+This is still a staged migration foundation, not a completed database
+switch. API services and repositories must be ported to SQLAlchemy and
+tested before deploying NARS against PostgreSQL.
 
 ## Database
 
