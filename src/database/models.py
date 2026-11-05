@@ -151,6 +151,18 @@ class AdaptationDecision(Base):
     created_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+
+class ApiUser(Base):
+    __tablename__ = "api_users"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 Index("ix_sessions_patient_date", RehabSession.patient_id, RehabSession.session_date)
 Index("ix_assessments_patient_date", ClinicalAssessment.patient_id, ClinicalAssessment.assessment_date)
 Index("ix_recommendations_patient_status", ExerciseRecommendation.patient_id, ExerciseRecommendation.status)
