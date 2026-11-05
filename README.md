@@ -770,8 +770,10 @@ The first ORM-backed vertical slice is now in place:
   `src/database/repositories/adaptation_repository.py` for API requests.
   The established controller/policy calculations remain unchanged, and
   approval still rechecks that the proposal original prescription is active.
-- Progress analytics and authentication workflows still use the legacy
-  SQLite functions.
+- Progress history, trend inputs, dashboard counts and recent-session reads
+  now use `src/database/repositories/progress_repository.py` for API requests.
+  The existing grouping and metric-version safeguards remain in
+  `src/progress/history.py`. Authentication still uses the legacy SQLite layer.
 
 **Do not configure the running API to use PostgreSQL yet.** That would split
 the patient API from the remaining SQLite-backed workflows. The runtime stays
