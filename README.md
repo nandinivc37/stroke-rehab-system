@@ -738,24 +738,33 @@ is the accuracy of always predicting "No Compensation".
   Any further use requires Step B and a separate decision.
 <!-- /STEP_A_RESULTS -->
 
-### Staged SQLAlchemy/PostgreSQL foundation (not yet the active data layer)
+### Staged SQLAlchemy/PostgreSQL foundation (incremental runtime migration)
 
-The existing application database layer in `src/database/db.py` remains
-SQLite-specific and continues to use the verified additive migration and
-backup process in `src/database/migrations.py`. Do not point that legacy
-layer at PostgreSQL: its SQL statements, placeholders, schema operations
-and row handling have not been ported.
+The legacy database layer in `src/database/db.py` remains the shared runtime
+store. Its verified additive migration and backup process in
+`src/database/migrations.py` must be preserved.
 
-The SQLAlchemy foundation is separate:
+The first ORM-backed vertical slice is now in place:
 
-- `src/database/sqlalchemy_support.py` reads `NARS_DATABASE_URL`, creates
-  SQLAlchemy engines and session factories, and defaults to the existing
-  local SQLite file.
+- `src/database/sqlalchemy_support.py` creates SQLAlchemy engines and
+  request-scoped session factories.
 - `src/database/models.py` maps patients, affected areas, assessments,
   recommendations, sessions, frame logs, adaptation decisions and API users.
-- `alembic/versions/0001_nars_initial.py` creates the initial NARS schema.
-- `alembic/versions/0002_api_users.py` adds therapist/admin API accounts.
-- `requirements-api.txt` includes SQLAlchemy, Alembic and Psycopg 3.
+- `src/database/repositories/patient_repository.py` handles patient and
+  affected-area persistence through SQLAlchemy.
+- Patient API requests receive a request-scoped SQLAlchemy session. The API
+  deliberately points that repository at the same existing SQLite file.
+- Assessment, recommendation, session, adaptation, progress and authentication
+  services still use the legacy SQLite functions.
+
+**Do not configure the running API to use PostgreSQL yet.** That would split
+the patient API from the remaining SQLite-backed workflows. The runtime stays
+on the shared SQLite database until all API services and authentication have
+been migrated and tested together.
+
+`alembic/versions/0001_nars_initial.py` and
+`alembic/versions/0002_api_users.py` create the PostgreSQL-ready schema.
+`requirements-api.txt` includes SQLAlchemy, Alembic and Psycopg 3.
 
 For a PostgreSQL development environment, install the API dependencies
 and configure a database URL such as:
@@ -768,9 +777,7 @@ alembic upgrade head
 ```
 
 The Alembic revisions create an empty target schema; they do not copy data.
-The existing API services still use the SQLite data-access functions, so
-setting `NARS_DATABASE_URL` does not yet switch the running application
-to PostgreSQL.
+The running API deliberately does not consume `NARS_DATABASE_URL` yet.
 
 #### SQLite-to-PostgreSQL migration utility
 
@@ -797,13 +804,14 @@ python -m src.database.migrate_sqlite_to_postgres --apply
 
 Set `NARS_DATABASE_URL` to the PostgreSQL target before either command.
 The apply mode refuses non-PostgreSQL targets and non-empty NARS tables.
-It retains the verified source snapshot for audit/recovery. Do not run an
-import against production until the migration has been tested against a
-disposable PostgreSQL instance and the resulting records have been reviewed.
+It retains the verified source snapshot for audit/recovery. The migration
+utility has an end-to-end CI test using a disposable PostgreSQL 16 service
+and synthetic patient, assessment, recommendation, session, frame,
+adaptation and therapist-account records.
 
-This is still a staged migration foundation, not a completed database
-switch. API services and repositories must be ported to SQLAlchemy and
-tested before deploying NARS against PostgreSQL.
+This remains a staged migration, not a completed production database
+switch. Port and test the remaining services and authentication before
+deploying the API against PostgreSQL.
 
 ## Database
 
