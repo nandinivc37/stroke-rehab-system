@@ -35,7 +35,7 @@ def test_adaptation_evaluation_delegates_to_existing_workflow(
     }
     monkeypatch.setattr(
         "src.services.adaptation_service.workflow.propose_after_session",
-        lambda received_patient, received_session: expected
+        lambda received_patient, received_session, **kwargs: expected
         if (received_patient, received_session) == (patient_id, 91)
         else None,
     )
@@ -75,7 +75,7 @@ def test_adaptation_approval_and_rejection_delegate_to_workflow(
 ):
     calls = []
 
-    def fake_review(proposal_id, approve, reviewer, note=""):
+    def fake_review(proposal_id, approve, reviewer, note="", database_session=None):
         calls.append((proposal_id, approve, reviewer, note))
         return "APPROVED" if approve else "REJECTED"
 
