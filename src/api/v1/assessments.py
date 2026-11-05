@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, status
 
-from src.schemas.assessment import AssessmentCreate, AssessmentRead, RecommendationReview
+from src.schemas.assessment import AssessmentCreate, AssessmentRead, RecommendationGenerate
 from src.services import assessment_service
 from src.services.patient_service import PatientNotFoundError
 
@@ -34,10 +34,8 @@ def get_current_assessment(patient_id: int):
 
 
 @router.post("/{patient_id}/recommendations/generate")
-def generate_recommendation(patient_id: int, payload: dict):
-    assessment_id = payload.get("assessment_id")
-    if not isinstance(assessment_id, int) or assessment_id <= 0:
-        raise HTTPException(status_code=422, detail="A positive assessment_id is required.")
+def generate_recommendation(patient_id: int, payload: RecommendationGenerate):
+    assessment_id = payload.assessment_id
     try:
         return assessment_service.generate_recommendation(patient_id, assessment_id)
     except PatientNotFoundError as exc:
