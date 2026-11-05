@@ -128,8 +128,9 @@ class SessionManager:
 
             results = self._pose_results(frame)
             if results is None:
-                state.analyzer.update(None, timestamp=frame.timestamp_s)
-                analysis = state.analyzer._frame("no_pose")
+                analysis = state.analyzer.update(
+                    None, timestamp=frame.timestamp_s
+                )
             else:
                 analysis = state.analyzer.update(
                     results, timestamp=frame.timestamp_s
