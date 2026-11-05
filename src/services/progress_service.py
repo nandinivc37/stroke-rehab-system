@@ -1,6 +1,7 @@
 """Read-only progress and dashboard services using existing metric helpers."""
 
 from src.database import db
+from src.database.repositories import progress_repository
 from src.progress.history import (
     compensation_text,
     group_sessions,
@@ -36,11 +37,17 @@ def _session_read(row):
     }
 
 
-def patient_progress(patient_id, exercise_id=None, affected_side=None):
+def patient_progress(patient_id, exercise_id=None, affected_side=None, database_session=None):
     get_patient(patient_id)
-    sessions = db.get_sessions(
-        patient_id, exercise_id=exercise_id, affected_side=affected_side
-    )
+    if database_session is None:
+        sessions = db.get_sessions(
+            patient_id, exercise_id=exercise_id, affected_side=affected_side
+        )
+    else:
+        sessions = progress_repository.list_patient_sessions(
+            database_session, patient_id,
+            exercise_id=exercise_id, affected_side=affected_side,
+        )
     groups = group_sessions(sessions)
     grouped = []
     for key, rows in groups.items():
@@ -60,22 +67,31 @@ def patient_progress(patient_id, exercise_id=None, affected_side=None):
     }
 
 
-def dashboard_summary():
-    counts = db.get_dashboard_counts()
-    patients = db.get_all_patients()
-    recent = []
-    for patient in patients:
-        patient_id = patient[0]
-        for session in db.get_sessions(patient_id)[-5:]:
-            recent.append({
-                "patient_id": patient_id,
-                "patient_name": patient[1],
-                **_session_read(session),
-            })
-    recent.sort(
-        key=lambda row: (row.get("session_date") or "", row.get("session_id") or 0),
-        reverse=True,
-    )
+def dashboard_summary(database_session=None):
+    if database_session is None:
+        counts = db.get_dashboard_counts()
+    else:
+        counts = progress_repository.dashboard_counts(database_session)
+    if database_session is not None:
+        recent = [
+            {**row, **_session_read(row)}
+            for row in progress_repository.recent_sessions(database_session, limit=10)
+        ]
+    else:
+        patients = db.get_all_patients()
+        recent = []
+        for patient in patients:
+            patient_id = patient[0]
+            for session in db.get_sessions(patient_id)[-5:]:
+                recent.append({
+                    "patient_id": patient_id,
+                    "patient_name": patient[1],
+                    **_session_read(session),
+                })
+        recent.sort(
+            key=lambda row: (row.get("session_date") or "", row.get("session_id") or 0),
+            reverse=True,
+        )
     return {
         "counts": counts,
         "recent_sessions": recent[:10],
