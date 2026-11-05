@@ -33,6 +33,16 @@ def get_current_assessment(patient_id: int):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/{patient_id}/recommendations")
+def list_patient_recommendations(patient_id: int, status_filter: str | None = None):
+    if status_filter is not None and status_filter not in {"PENDING", "APPROVED", "REJECTED"}:
+        raise HTTPException(status_code=422, detail="Unsupported recommendation status.")
+    try:
+        return assessment_service.list_recommendations(patient_id, status=status_filter)
+    except PatientNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/{patient_id}/recommendations/generate")
 def generate_recommendation(patient_id: int, payload: RecommendationGenerate):
     assessment_id = payload.assessment_id
