@@ -22,6 +22,7 @@ from src.adaptation.controller import (
 )
 from src.adaptation.policy import POLICY_VERSION, PolicyConfig
 from src.database import db
+from src.database.repositories import adaptation_repository
 from src.exercises.catalogue import get_exercise_config
 
 STATUS_PENDING = "PENDING"
@@ -34,7 +35,7 @@ class AdaptationError(RuntimeError):
     pass
 
 
-def propose_after_session(patient_id, session_id, policy=None):
+def propose_after_session(patient_id, session_id, policy=None, database_session=None):
     """
     Run the adaptive controller after a saved session (one attempt).
 
@@ -80,74 +81,71 @@ def propose_after_session(patient_id, session_id, policy=None):
         k: v for k, v in result.to_dict().items() if k != "policy_inputs"
     }
 
-    conn = db.get_connection()
-    try:
-        cursor = conn.execute("""
-            INSERT INTO adaptation_decisions(
-                patient_id, exercise_id, affected_side, session_id,
-                policy_version, decision, rationale, inputs_json,
-                previous_parameters_json, proposed_parameters_json,
-                previous_recommendation_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            patient_id,
-            exercise.exercise_id,
-            side,
-            session_id,
-            POLICY_VERSION,
-            result.decision,
-            result.reason,
-            json.dumps(inputs, sort_keys=True, default=str),
-            json.dumps(result.previous_parameters, sort_keys=True),
-            json.dumps(result.proposed_parameters, sort_keys=True),
-            prescription["recommendation_id"],
-        ))
-        decision_id = cursor.lastrowid
+    proposal = None
+    if result.requires_approval:
+        proposal = {
+            "assessment_id": prescription["assessment_id"],
+            "exercise": exercise.display_name,
+            "difficulty": prescription["difficulty"],
+            "reason": f"{result.decision}: {result.reason}",
+        }
 
-        proposal_id = None
-
-        if result.requires_approval:
-            # Only one open proposal per patient: older ones are
-            # superseded by the newer evaluation.
-            conn.execute("""
-                UPDATE exercise_recommendations
-                SET status = ?
-                WHERE patient_id = ?
-                  AND source = 'ADAPTATION'
-                  AND status = ?
-            """, (STATUS_SUPERSEDED, patient_id, STATUS_PENDING))
-
+    if database_session is None:
+        conn = db.get_connection()
+        try:
             cursor = conn.execute("""
-                INSERT INTO exercise_recommendations(
-                    patient_id, assessment_id, exercise, difficulty,
-                    reason, status, exercise_id, affected_side,
-                    parameters_json, source, adaptation_decision_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ADAPTATION', ?)
+                INSERT INTO adaptation_decisions(
+                    patient_id, exercise_id, affected_side, session_id,
+                    policy_version, decision, rationale, inputs_json,
+                    previous_parameters_json, proposed_parameters_json,
+                    previous_recommendation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                patient_id,
-                prescription["assessment_id"],
-                exercise.display_name,
-                prescription["difficulty"],
-                f"{result.decision}: {result.reason}",
-                STATUS_PENDING,
-                exercise.exercise_id,
-                side,
+                patient_id, exercise.exercise_id, side, session_id,
+                POLICY_VERSION, result.decision, result.reason,
+                json.dumps(inputs, sort_keys=True, default=str),
+                json.dumps(result.previous_parameters, sort_keys=True),
                 json.dumps(result.proposed_parameters, sort_keys=True),
-                decision_id,
+                prescription["recommendation_id"],
             ))
-            proposal_id = cursor.lastrowid
-
-            conn.execute("""
-                UPDATE adaptation_decisions
-                SET proposed_recommendation_id = ?
-                WHERE decision_id = ?
-            """, (proposal_id, decision_id))
-
-        conn.commit()
-    finally:
-        conn.close()
+            decision_id = cursor.lastrowid
+            proposal_id = None
+            if proposal is not None:
+                conn.execute("""
+                    UPDATE exercise_recommendations SET status = ?
+                    WHERE patient_id = ? AND source = 'ADAPTATION' AND status = ?
+                """, (STATUS_SUPERSEDED, patient_id, STATUS_PENDING))
+                cursor = conn.execute("""
+                    INSERT INTO exercise_recommendations(
+                        patient_id, assessment_id, exercise, difficulty, reason,
+                        status, exercise_id, affected_side, parameters_json,
+                        source, adaptation_decision_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ADAPTATION', ?)
+                """, (
+                    patient_id, proposal["assessment_id"], proposal["exercise"],
+                    proposal["difficulty"], proposal["reason"], STATUS_PENDING,
+                    exercise.exercise_id, side,
+                    json.dumps(result.proposed_parameters, sort_keys=True), decision_id,
+                ))
+                proposal_id = cursor.lastrowid
+                conn.execute(
+                    "UPDATE adaptation_decisions SET proposed_recommendation_id = ? WHERE decision_id = ?",
+                    (proposal_id, decision_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        decision_id, proposal_id = adaptation_repository.record_decision(
+            database_session, patient_id=patient_id,
+            exercise_id=exercise.exercise_id, affected_side=side,
+            session_id=session_id, policy_version=POLICY_VERSION,
+            decision=result.decision, rationale=result.reason, inputs=inputs,
+            previous_parameters=result.previous_parameters,
+            proposed_parameters=result.proposed_parameters,
+            previous_recommendation_id=prescription["recommendation_id"],
+            proposal=proposal,
+        )
 
     return {
         "action": result.action,
@@ -162,7 +160,9 @@ def propose_after_session(patient_id, session_id, policy=None):
     }
 
 
-def pending_proposals(patient_id):
+def pending_proposals(patient_id, database_session=None):
+    if database_session is not None:
+        return adaptation_repository.list_pending_proposals(database_session, patient_id)
     conn = db.get_connection()
     try:
         cursor = conn.execute("""
@@ -171,11 +171,8 @@ def pending_proposals(patient_id):
                    r.created_at, d.decision, d.previous_parameters_json,
                    d.previous_recommendation_id
             FROM exercise_recommendations r
-            JOIN adaptation_decisions d
-              ON d.decision_id = r.adaptation_decision_id
-            WHERE r.patient_id = ?
-              AND r.source = 'ADAPTATION'
-              AND r.status = ?
+            JOIN adaptation_decisions d ON d.decision_id = r.adaptation_decision_id
+            WHERE r.patient_id = ? AND r.source = 'ADAPTATION' AND r.status = ?
             ORDER BY r.recommendation_id DESC
         """, (patient_id, STATUS_PENDING))
         columns = [c[0] for c in cursor.description]
@@ -184,28 +181,24 @@ def pending_proposals(patient_id):
         conn.close()
 
 
-def decision_history(patient_id):
+def decision_history(patient_id, database_session=None):
+    if database_session is not None:
+        return adaptation_repository.list_decision_history(database_session, patient_id)
     conn = db.get_connection()
     try:
         cursor = conn.execute("""
             SELECT d.*, r.status AS proposal_status, r.reviewed_by
-            FROM adaptation_decisions d
-            LEFT JOIN exercise_recommendations r
+            FROM adaptation_decisions d LEFT JOIN exercise_recommendations r
               ON r.recommendation_id = d.proposed_recommendation_id
-            WHERE d.patient_id = ?
-            ORDER BY d.decision_id DESC
+            WHERE d.patient_id = ? ORDER BY d.decision_id DESC
         """, (patient_id,))
         columns = [c[0] for c in cursor.description]
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
     finally:
         conn.close()
-
-    # Controller action and patient feedback (None for decisions logged
-    # before the controller existed).
     for row in rows:
         try:
-            controller = json.loads(row["inputs_json"] or "{}").get(
-                "controller") or {}
+            controller = json.loads(row["inputs_json"] or "{}").get("controller") or {}
         except (TypeError, ValueError, AttributeError):
             controller = {}
         row["action"] = controller.get("action")
@@ -213,67 +206,73 @@ def decision_history(patient_id):
     return rows
 
 
-def review_proposal(proposal_id, approve, reviewer, note=""):
-    """
-    Approve or reject a PENDING adaptation proposal.
-
-    Approval is refused when the prescription the proposal was based on
-    is no longer the active one (e.g. the therapist assigned a different
-    exercise in the meantime).
-    """
-
+def review_proposal(proposal_id, approve, reviewer, note="", database_session=None):
+    """Review a pending proposal; the active-prescription basis is rechecked."""
     if not reviewer or not reviewer.strip():
         raise AdaptationError("A reviewer name is required.")
+
+    if database_session is not None:
+        proposal = adaptation_repository.get_adaptation_proposal(database_session, proposal_id)
+        if proposal is None:
+            raise AdaptationError("Adaptation proposal not found.")
+        if proposal["status"] != STATUS_PENDING:
+            raise AdaptationError(f"Proposal is already {proposal['status'].lower()}.")
+        if approve:
+            active = db.get_active_prescription(proposal["patient_id"])
+            if active is None or active["recommendation_id"] != proposal["previous_recommendation_id"]:
+                raise AdaptationError(
+                    "The prescription this proposal was based on is no longer active. "
+                    "Reject it; a new proposal will follow the next session."
+                )
+        new_status = STATUS_APPROVED if approve else STATUS_REJECTED
+        try:
+            adaptation_repository.review_proposal(
+                database_session, proposal_id, status=new_status,
+                reviewer=reviewer, note=note,
+            )
+        except RuntimeError as exc:
+            raise AdaptationError(str(exc)) from exc
+        return new_status
 
     conn = db.get_connection()
     try:
         row = conn.execute("""
             SELECT r.patient_id, r.status, d.previous_recommendation_id
-            FROM exercise_recommendations r
-            JOIN adaptation_decisions d
+            FROM exercise_recommendations r JOIN adaptation_decisions d
               ON d.decision_id = r.adaptation_decision_id
-            WHERE r.recommendation_id = ?
-              AND r.source = 'ADAPTATION'
+            WHERE r.recommendation_id = ? AND r.source = 'ADAPTATION'
         """, (proposal_id,)).fetchone()
     finally:
         conn.close()
-
     if row is None:
         raise AdaptationError("Adaptation proposal not found.")
-
     patient_id, status, based_on = row
-
     if status != STATUS_PENDING:
         raise AdaptationError(f"Proposal is already {status.lower()}.")
-
     if approve:
         active = db.get_active_prescription(patient_id)
         if active is None or active["recommendation_id"] != based_on:
             raise AdaptationError(
-                "The prescription this proposal was based on is no longer "
-                "active. Reject it; a new proposal will follow the next "
-                "session."
+                "The prescription this proposal was based on is no longer active. "
+                "Reject it; a new proposal will follow the next session."
             )
-
     new_status = STATUS_APPROVED if approve else STATUS_REJECTED
-
     conn = db.get_connection()
     try:
-        conn.execute("""
-            UPDATE exercise_recommendations
-            SET status = ?,
-                approved_at = CASE WHEN ? = 'APPROVED'
-                                   THEN CURRENT_TIMESTAMP
-                                   ELSE approved_at END,
-                reviewed_by = ?,
-                review_note = ?
-            WHERE recommendation_id = ?
-        """, (new_status, new_status, reviewer.strip(), note, proposal_id))
+        cursor = conn.execute("""
+            UPDATE exercise_recommendations SET status = ?,
+                approved_at = CASE WHEN ? = 'APPROVED' THEN CURRENT_TIMESTAMP ELSE approved_at END,
+                reviewed_by = ?, review_note = ?
+            WHERE recommendation_id = ? AND status = ? AND source = 'ADAPTATION'
+        """, (new_status, new_status, reviewer.strip(), note, proposal_id, STATUS_PENDING))
+        if cursor.rowcount != 1:
+            raise AdaptationError("Proposal is no longer pending.")
         conn.commit()
     finally:
         conn.close()
-
     return new_status
+
+
 
 
 __all__ = [
