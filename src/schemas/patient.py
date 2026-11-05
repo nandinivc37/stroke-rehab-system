@@ -30,6 +30,8 @@ class AffectedAreaCreate(BaseModel):
 
 
 class AffectedAreaRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     area_id: int
     side: str
     body_region: str
