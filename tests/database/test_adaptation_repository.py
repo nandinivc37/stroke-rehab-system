@@ -121,6 +121,34 @@ def test_therapist_review_is_single_transition(database_session):
         )
 
 
+def test_stale_proposal_cannot_be_approved_after_prescription_changes(database_session):
+    session, patient_id, assessment_id = database_session
+    _, proposal_id = _record(session, patient_id, assessment_id)
+    session.add(ExerciseRecommendation(
+        recommendation_id=12,
+        patient_id=patient_id,
+        assessment_id=assessment_id,
+        exercise="Replacement Approved Exercise",
+        difficulty="Level 2",
+        reason="Therapist changed prescription",
+        status="APPROVED",
+        exercise_id="shoulder_flexion",
+        affected_side="LEFT",
+        parameters_json='{"target_reps": 7}',
+        source="ASSESSMENT",
+    ))
+    session.commit()
+
+    with pytest.raises(RuntimeError, match="no longer active"):
+        adaptation_repository.review_proposal(
+            session,
+            proposal_id,
+            status="APPROVED",
+            reviewer="Synthetic Therapist",
+        )
+    assert session.get(ExerciseRecommendation, proposal_id).status == "PENDING"
+
+
 def test_pending_and_decision_history_keep_review_context(database_session):
     session, patient_id, assessment_id = database_session
     decision_id, proposal_id = _record(session, patient_id, assessment_id)
