@@ -890,6 +890,34 @@ uvicorn src.api.main:app --reload
 Open `http://127.0.0.1:8000/docs` for the interactive API documentation.
 The health endpoint is `GET /api/v1/health`.
 
+### Adaptive decision-support flow
+
+After a completed session has been persisted, the client can explicitly
+request an adaptive evaluation:
+
+```http
+POST /api/v1/patients/{patient_id}/sessions/{session_id}/adaptation/evaluate
+```
+
+The endpoint delegates to the existing conservative controller and
+policy. The decision, policy inputs, rationale, previous parameters and
+proposed parameters are recorded by the existing adaptive workflow.
+Read the therapist review queue and decision history with:
+
+- `GET /api/v1/patients/{patient_id}/adaptation/pending`
+- `GET /api/v1/patients/{patient_id}/adaptation/history`
+
+A proposed change is not active until a therapist reviews it:
+
+- `POST /api/v1/adaptation/{proposal_id}/approve`
+- `POST /api/v1/adaptation/{proposal_id}/reject`
+
+Both review requests require a reviewer name and accept an optional note.
+The existing workflow checks that a proposal is still pending and, on
+approval, that the prescription it was based on remains active. An
+evaluation is deliberately a separate explicit request; completing a
+session does not silently change the prescription.
+
 ### Landmark-based session flow
 
 1. Create a session with `POST /api/v1/sessions`. A therapist-approved
