@@ -222,6 +222,7 @@ def get_affected_areas(patient_id):
             notes
         FROM affected_areas
         WHERE patient_id = ?
+        ORDER BY area_id
     """, (patient_id,))
 
     areas = [
