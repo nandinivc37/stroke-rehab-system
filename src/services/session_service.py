@@ -190,7 +190,11 @@ class SessionManager:
     def has_session(self, session_id):
         """Return whether an in-memory analyzer is active for this session."""
         with self._lock:
-            return session_id in self._sessions
+            state = self._sessions.get(session_id)
+            return (
+                state is not None
+                and monotonic() - state.last_activity_monotonic < self.idle_timeout_seconds
+            )
 
     def add_frame(self, session_id, frame, database_session=None):
         with self._lock:
@@ -230,10 +234,6 @@ class SessionManager:
             state.last_timestamp = frame.timestamp_s
             state.frame_count += 1
             state.last_activity_monotonic = monotonic()
-            if database_session is not None:
-                live_session_repository.increment_frame_count(
-                    database_session, session_id
-                )
             state.last_activity_monotonic = monotonic()
             if database_session is not None:
                 live_session_repository.increment_frame_count(
