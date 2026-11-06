@@ -36,13 +36,18 @@ def get_live_session(session: Session, session_id: str):
     return session.get(LiveSession, session_id)
 
 
-def finish_live_session(session: Session, session_id: str, status: str):
+def finish_live_session(
+    session: Session, session_id: str, status: str, frames_received: int | None = None
+):
     if status not in {"COMPLETED", "CANCELLED", "INTERRUPTED"}:
         raise ValueError("Invalid live-session terminal status.")
+    values = {"status": status, "ended_at": datetime.now()}
+    if frames_received is not None:
+        values["frames_received"] = max(0, int(frames_received))
     result = session.execute(
         update(LiveSession)
         .where(LiveSession.session_id == session_id, LiveSession.status == "ACTIVE")
-        .values(status=status, ended_at=datetime.now())
+        .values(**values)
     )
     session.commit()
     return result.rowcount == 1
