@@ -1,7 +1,12 @@
 """API tests for read-only progress and dashboard endpoints."""
 
+from src.api.dependencies import get_current_user
+
 
 def test_dashboard_summary_returns_database_counts(api_client):
+    api_client.app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": 2, "username": "test-admin", "role": "admin", "is_active": True,
+    }
     patient = api_client.post(
         "/api/v1/patients", json={"name": "Synthetic Dashboard Patient"}
     )
