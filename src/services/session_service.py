@@ -8,6 +8,7 @@ prototype. A shared state store is required before multi-worker deployment.
 
 import os
 from threading import RLock
+from time import monotonic
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -44,6 +45,7 @@ class _SessionState:
         self.analyzer = analyzer
         self.last_timestamp = None
         self.frame_count = 0
+        self.last_activity_monotonic = monotonic()
 
 
 class SessionManager:
@@ -59,6 +61,28 @@ class SessionManager:
         if configured_limit < 1:
             raise ValueError("NARS_MAX_ACTIVE_SESSIONS must be at least 1.")
         self.max_active_sessions = configured_limit
+        self.idle_timeout_seconds = float(
+            os.getenv("NARS_SESSION_IDLE_TIMEOUT_SECONDS", "900")
+        )
+        if self.idle_timeout_seconds <= 0:
+            raise ValueError("NARS_SESSION_IDLE_TIMEOUT_SECONDS must be positive.")
+
+    def cleanup_idle_sessions(self, database_session=None):
+        """Expire abandoned in-process analyzers and persist their terminal state."""
+        now = monotonic()
+        expired = []
+        with self._lock:
+            for session_id, state in list(self._sessions.items()):
+                if now - state.last_activity_monotonic >= self.idle_timeout_seconds:
+                    expired.append((session_id, state))
+                    del self._sessions[session_id]
+        if database_session is not None:
+            for session_id, state in expired:
+                live_session_repository.finish_live_session(
+                    database_session, session_id, "INTERRUPTED",
+                    frames_received=state.frame_count,
+                )
+        return len(expired)
 
     def start(self, patient_id, database_session=None):
         # Reserve capacity before doing database work so concurrent requests
@@ -70,6 +94,7 @@ class SessionManager:
                 )
             self._starting_sessions += 1
         try:
+            self.cleanup_idle_sessions(database_session)
             return self._start_reserved(patient_id, database_session)
         finally:
             with self._lock:
@@ -165,11 +190,19 @@ class SessionManager:
         with self._lock:
             return session_id in self._sessions
 
-    def add_frame(self, session_id, frame):
+    def add_frame(self, session_id, frame, database_session=None):
         with self._lock:
             state = self._sessions.get(session_id)
             if state is None:
                 raise SessionNotFoundError("Active session was not found.")
+            if monotonic() - state.last_activity_monotonic >= self.idle_timeout_seconds:
+                del self._sessions[session_id]
+                if database_session is not None:
+                    live_session_repository.finish_live_session(
+                        database_session, session_id, "INTERRUPTED",
+                        frames_received=state.frame_count,
+                    )
+                raise SessionNotFoundError("Session expired after inactivity.")
             if (
                 state.last_timestamp is not None
                 and frame.timestamp_s <= state.last_timestamp
@@ -194,6 +227,11 @@ class SessionManager:
                 )
             state.last_timestamp = frame.timestamp_s
             state.frame_count += 1
+            state.last_activity_monotonic = monotonic()
+            if database_session is not None:
+                live_session_repository.increment_frame_count(
+                    database_session, session_id
+                )
             return {
                 "status": analysis.status,
                 "angle": analysis.angle,
@@ -211,6 +249,15 @@ class SessionManager:
                 raise SessionValidationError(
                     "A session with no received frames cannot be saved."
                 )
+
+            if monotonic() - state.last_activity_monotonic >= self.idle_timeout_seconds:
+                del self._sessions[session_id]
+                if database_session is not None:
+                    live_session_repository.finish_live_session(
+                        database_session, session_id, "INTERRUPTED",
+                        frames_received=state.frame_count,
+                    )
+                raise SessionNotFoundError("Session expired after inactivity.")
 
             summary = state.analyzer.summary()
             summary["session_status"] = db.SESSION_STATUS_COMPLETE
