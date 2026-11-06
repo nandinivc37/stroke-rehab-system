@@ -27,6 +27,21 @@ def api_client(tmp_path, monkeypatch):
     }
     try:
         with TestClient(app) as client:
+            from src.database.models import ApiUser
+            factory = app.state.database_session_factory
+            seed_session = factory()
+            try:
+                if seed_session.get(ApiUser, 1) is None:
+                    seed_session.add(ApiUser(
+                        user_id=1,
+                        username="test-admin",
+                        password_hash="test-only",
+                        role="admin",
+                        is_active=1,
+                    ))
+                    seed_session.commit()
+            finally:
+                seed_session.close()
             yield client
     finally:
         app.dependency_overrides.pop(get_current_user, None)
