@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from src.api.dependencies import get_db_session
+from src.api.dependencies import get_db_session, require_patient_access
 from src.schemas.assessment import AssessmentCreate, AssessmentRead, RecommendationGenerate
 from src.services import assessment_service
 from src.services.patient_service import PatientNotFoundError
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/patients", tags=["clinical assessments"])
     response_model=AssessmentRead,
     status_code=status.HTTP_201_CREATED,
 )
-def create_assessment(patient_id: int, payload: AssessmentCreate, session: Session = Depends(get_db_session)):
+def create_assessment(patient_id: int, payload: AssessmentCreate, session: Session = Depends(get_db_session), _access=Depends(require_patient_access)):
     try:
         return assessment_service.create_assessment(session, patient_id, payload)
     except PatientNotFoundError as exc:
@@ -26,7 +26,7 @@ def create_assessment(patient_id: int, payload: AssessmentCreate, session: Sessi
 
 
 @router.get("/{patient_id}/assessments/current", response_model=AssessmentRead)
-def get_current_assessment(patient_id: int, session: Session = Depends(get_db_session)):
+def get_current_assessment(patient_id: int, session: Session = Depends(get_db_session), _access=Depends(require_patient_access)):
     try:
         return assessment_service.get_latest_assessment(session, patient_id)
     except PatientNotFoundError as exc:
@@ -36,7 +36,7 @@ def get_current_assessment(patient_id: int, session: Session = Depends(get_db_se
 
 
 @router.get("/{patient_id}/recommendations")
-def list_patient_recommendations(patient_id: int, status_filter: str | None = None, session: Session = Depends(get_db_session)):
+def list_patient_recommendations(patient_id: int, status_filter: str | None = None, session: Session = Depends(get_db_session), _access=Depends(require_patient_access)):
     if status_filter is not None and status_filter not in {"PENDING", "APPROVED", "REJECTED"}:
         raise HTTPException(status_code=422, detail="Unsupported recommendation status.")
     try:
@@ -46,7 +46,7 @@ def list_patient_recommendations(patient_id: int, status_filter: str | None = No
 
 
 @router.post("/{patient_id}/recommendations/generate")
-def generate_recommendation(patient_id: int, payload: RecommendationGenerate, session: Session = Depends(get_db_session)):
+def generate_recommendation(patient_id: int, payload: RecommendationGenerate, session: Session = Depends(get_db_session), _access=Depends(require_patient_access)):
     assessment_id = payload.assessment_id
     try:
         return assessment_service.generate_recommendation(session, patient_id, assessment_id)
