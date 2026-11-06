@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from src.api.dependencies import get_db_session
+from src.api.dependencies import get_db_session, require_patient_access, require_session_access
 from src.services.auth_service import AuthenticationError, decode_token
 from src.schemas.session import (
     FrameAnalysisRead,
@@ -29,7 +29,9 @@ stream_router = APIRouter(tags=["rehabilitation streaming"])
     status_code=status.HTTP_201_CREATED,
 )
 def start_session(
-    payload: SessionStart, database_session: Session = Depends(get_db_session)
+    payload: SessionStart,
+    database_session: Session = Depends(get_db_session),
+    _access=Depends(require_patient_access),
 ):
     try:
         return session_service.session_manager.start(
@@ -45,7 +47,10 @@ def start_session(
     "/sessions/{session_id}/frames",
     response_model=FrameAnalysisRead,
 )
-def submit_pose_frame(session_id: str, payload: PoseFrameCreate):
+def submit_pose_frame(
+    session_id: str, payload: PoseFrameCreate,
+    _access=Depends(require_session_access),
+):
     try:
         return session_service.session_manager.add_frame(session_id, payload)
     except session_service.SessionNotFoundError as exc:
@@ -58,7 +63,11 @@ def submit_pose_frame(session_id: str, payload: PoseFrameCreate):
     "/sessions/{session_id}/complete",
     response_model=SessionCompleteRead,
 )
-def complete_session(session_id: str, database_session: Session = Depends(get_db_session)):
+def complete_session(
+    session_id: str,
+    database_session: Session = Depends(get_db_session),
+    _access=Depends(require_session_access),
+):
     try:
         return session_service.session_manager.complete(session_id, database_session)
     except session_service.SessionNotFoundError as exc:
@@ -69,7 +78,8 @@ def complete_session(session_id: str, database_session: Session = Depends(get_db
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_200_OK)
 def cancel_session(
-    session_id: str, database_session: Session = Depends(get_db_session)
+    session_id: str, database_session: Session = Depends(get_db_session),
+    _access=Depends(require_session_access),
 ):
     try:
         return session_service.session_manager.cancel(
@@ -120,6 +130,13 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
                 lifecycle_session, session_id
             )
             is_active = durable is not None and durable.status == "ACTIVE"
+            if is_active and user.get("role") != "admin":
+                from src.database.repositories import assignment_repository
+                is_active = assignment_repository.therapist_has_patient(
+                    lifecycle_session,
+                    patient_id=durable.patient_id,
+                    therapist_user_id=user["user_id"],
+                )
         finally:
             lifecycle_session.close()
 
