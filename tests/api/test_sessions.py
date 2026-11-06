@@ -224,3 +224,55 @@ def test_api_session_start_uses_configured_orm_database(api_client, monkeypatch)
     assert response.status_code == 201
     assert response.json()["status"] == "ACTIVE"
     api_client.delete(f"/api/v1/sessions/{response.json()['session_id']}")
+
+
+
+def test_active_session_capacity_is_enforced(api_client, monkeypatch):
+    from src.services import session_service
+
+    patient_id = create_patient_with_approved_prescription(api_client)
+    manager = session_service.session_manager
+    original_limit = manager.max_active_sessions
+    manager.max_active_sessions = 1
+    try:
+        first = api_client.post("/api/v1/sessions", json={"patient_id": patient_id})
+        assert first.status_code == 201
+
+        second = api_client.post("/api/v1/sessions", json={"patient_id": patient_id})
+        assert second.status_code == 409
+        assert "active rehabilitation session limit" in second.json()["detail"]
+
+        cancelled = api_client.delete(
+            f"/api/v1/sessions/{first.json()['session_id']}"
+        )
+        assert cancelled.status_code == 200
+    finally:
+        manager.max_active_sessions = original_limit
+
+
+def test_idle_session_is_interrupted_during_next_start(api_client):
+    from time import monotonic
+    from src.services import session_service
+    from src.database.repositories import live_session_repository
+
+    patient_id = create_patient_with_approved_prescription(api_client)
+    first = api_client.post("/api/v1/sessions", json={"patient_id": patient_id})
+    assert first.status_code == 201
+    first_id = first.json()["session_id"]
+
+    manager = session_service.session_manager
+    manager._sessions[first_id].last_activity_monotonic = (
+        monotonic() - manager.idle_timeout_seconds - 1
+    )
+
+    second = api_client.post("/api/v1/sessions", json={"patient_id": patient_id})
+    assert second.status_code == 201
+
+    session = api_client.app.state.database_session_factory()
+    try:
+        row = live_session_repository.get_live_session(session, first_id)
+        assert row.status == "INTERRUPTED"
+        assert row.ended_at is not None
+    finally:
+        session.close()
+        api_client.delete(f"/api/v1/sessions/{second.json()['session_id']}")
