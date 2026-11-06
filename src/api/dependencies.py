@@ -109,6 +109,8 @@ def require_proposal_access(
     user=Depends(get_current_user),
 ):
     """Require access to the patient attached to an adaptive proposal."""
+    if user["role"] == "admin":
+        return user
     from src.database.repositories import adaptation_repository, assignment_repository
 
     proposal = adaptation_repository.get_adaptation_proposal(session, proposal_id)
@@ -128,6 +130,8 @@ def require_recommendation_access(
     user=Depends(get_current_user),
 ):
     """Require access to the patient attached to a recommendation."""
+    if user["role"] == "admin":
+        return user
     from src.database.repositories import assessment_repository, assignment_repository
 
     recommendation = assessment_repository.get_recommendation(session, recommendation_id)
