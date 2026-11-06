@@ -100,3 +100,22 @@ def require_session_access(
         ):
             raise HTTPException(status_code=404, detail="Session was not found.")
     return user
+
+
+
+def require_proposal_access(
+    proposal_id: int,
+    session: Session = Depends(get_db_session),
+    user=Depends(get_current_user),
+):
+    """Require access to the patient attached to an adaptive proposal."""
+    from src.database.repositories import adaptation_repository, assignment_repository
+
+    proposal = adaptation_repository.get_adaptation_proposal(session, proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Adaptation proposal was not found.")
+    if user["role"] != "admin" and not assignment_repository.therapist_has_patient(
+        session, patient_id=proposal["patient_id"], therapist_user_id=user["user_id"]
+    ):
+        raise HTTPException(status_code=404, detail="Adaptation proposal was not found.")
+    return user
