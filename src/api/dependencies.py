@@ -56,14 +56,10 @@ def require_roles(*allowed_roles):
 
 
 
-def require_patient_access(
-    patient_id: int,
-    session: Session = Depends(get_db_session),
-    user=Depends(get_current_user),
-):
-    """Require an explicit therapist assignment; administrators can manage all patients."""
+def assert_patient_access(session: Session, patient_id: int, user):
+    """Raise a non-disclosing 404 unless the user is assigned to the patient."""
     if user["role"] == "admin":
-        return user
+        return
     from src.database.repositories import assignment_repository
 
     if not assignment_repository.therapist_has_patient(
@@ -73,6 +69,15 @@ def require_patient_access(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Patient was not found.",
         )
+
+
+def require_patient_access(
+    patient_id: int,
+    session: Session = Depends(get_db_session),
+    user=Depends(get_current_user),
+):
+    """FastAPI dependency for routes with patient_id as a path parameter."""
+    assert_patient_access(session, patient_id, user)
     return user
 
 
