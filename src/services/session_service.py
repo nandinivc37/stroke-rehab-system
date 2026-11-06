@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from src.database import db
-from src.database.repositories import session_repository
+from src.database.repositories import session_repository, live_session_repository
 from src.exercises.analyzer import ExerciseAnalyzer
 from src.exercises.catalogue import get_exercise_config
 from src.services.patient_service import get_patient
@@ -47,7 +47,7 @@ class SessionManager:
         self._sessions = {}
         self._lock = RLock()
 
-    def start(self, patient_id):
+    def start(self, patient_id, database_session=None):
         get_patient(patient_id)
         prescription = db.get_active_prescription(patient_id)
         if prescription is None:
@@ -78,6 +78,15 @@ class SessionManager:
         state = _SessionState(
             session_id, patient_id, prescription, config, analyzer
         )
+        if database_session is not None:
+            live_session_repository.create_live_session(
+                database_session,
+                session_id=session_id,
+                patient_id=patient_id,
+                prescription_id=prescription["recommendation_id"],
+                exercise_id=config.exercise_id,
+                affected_side=side,
+            )
         with self._lock:
             self._sessions[session_id] = state
         return {
@@ -180,6 +189,10 @@ class SessionManager:
                     prescription_id=state.prescription["recommendation_id"],
                     session_status=db.SESSION_STATUS_COMPLETE,
                 )
+            if database_session is not None:
+                live_session_repository.finish_live_session(
+                    database_session, session_id, "COMPLETED"
+                )
             del self._sessions[session_id]
 
             return {
@@ -191,10 +204,14 @@ class SessionManager:
                 "summary": summary,
             }
 
-    def cancel(self, session_id):
+    def cancel(self, session_id, database_session=None):
         with self._lock:
             if session_id not in self._sessions:
                 raise SessionNotFoundError("Active session was not found.")
+            if database_session is not None:
+                live_session_repository.finish_live_session(
+                    database_session, session_id, "CANCELLED"
+                )
             del self._sessions[session_id]
             return {"session_id": session_id, "status": "CANCELLED"}
 
