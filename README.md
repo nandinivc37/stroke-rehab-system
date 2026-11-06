@@ -1095,6 +1095,48 @@ unprotected deployment.
 
 
 
+
+
+### Optional desktop API client
+
+The desktop application now has a GUI-independent HTTP client at
+`src/api/client.py`. It can authenticate against the API, retrieve the
+therapist's assigned patient list, start and finish sessions, and submit
+MediaPipe's 33-point pose landmarks. The webcam and MediaPipe inference
+remain on the desktop; only landmark measurements are sent to the API.
+
+The client is an integration seam, not yet a replacement for the desktop
+pages' legacy SQLite workflows. Existing desktop pages continue to use
+their local database until each workflow is migrated and tested end to end.
+Do not run the desktop and API against the same SQLite file as a substitute
+for a supported shared deployment.
+
+Example from the project root:
+
+```python
+from src.api.client import NARSAPIClient, pose_frame_payload
+
+client = NARSAPIClient("https://your-protected-api-host")
+try:
+    therapist = client.login("therapist-username", "password")
+    patients = client.list_patients()
+    # After a therapist selects a patient with an approved prescription:
+    session = client.start_session(patients[0]["patient_id"])
+    # For each locally captured MediaPipe result:
+    # payload = pose_frame_payload(results, timestamp_s, width, height)
+    # analysis = client.submit_pose_frame(session["session_id"], payload)
+    # At the end:
+    # summary = client.complete_session(session["session_id"])
+finally:
+    client.close()
+```
+
+The access token is held in memory only and cleared when the client closes
+or the API returns HTTP 401. Use HTTPS outside localhost. Do not log tokens
+or send identifiable patient data to an unprotected endpoint. The client
+contract tests use a mocked HTTP transport and do not claim webcam,
+network deployment, or clinical validation.
+
 ### Docker prototype deployment
 
 A single-worker Docker Compose deployment is provided for integration
