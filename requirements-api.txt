@@ -6,8 +6,5 @@ httpx>=0.27,<1.0
 PyJWT>=2.10,<3.0
 SQLAlchemy>=2.0,<3.0
 numpy==1.26.4
-mediapipe==0.10.21
-protobuf==4.25.9
-opencv-contrib-python==4.11.0.86
 psycopg[binary]>=3.2,<4.0
 alembic>=1.14,<2.0
