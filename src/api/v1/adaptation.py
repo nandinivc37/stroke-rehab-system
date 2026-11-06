@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from src.adaptation.workflow import AdaptationError
-from src.api.dependencies import get_db_session
+from src.api.dependencies import get_db_session, require_patient_access
 from src.schemas.adaptation import AdaptationReview
 from src.services import adaptation_service
 from src.services.patient_service import PatientNotFoundError
@@ -13,7 +13,7 @@ router = APIRouter(tags=["adaptive decision support"])
 
 
 @router.post("/patients/{patient_id}/sessions/{session_id}/adaptation/evaluate")
-def evaluate_session(patient_id: int, session_id: int, database_session: Session = Depends(get_db_session)):
+def evaluate_session(patient_id: int, session_id: int, database_session: Session = Depends(get_db_session), _access=Depends(require_patient_access)):
     try:
         return adaptation_service.evaluate_session(patient_id, session_id, database_session)
     except PatientNotFoundError as exc:
@@ -23,7 +23,7 @@ def evaluate_session(patient_id: int, session_id: int, database_session: Session
 
 
 @router.get("/patients/{patient_id}/adaptation/pending")
-def pending_proposals(patient_id: int, database_session: Session = Depends(get_db_session)):
+def pending_proposals(patient_id: int, database_session: Session = Depends(get_db_session), _access=Depends(require_patient_access)):
     try:
         return adaptation_service.pending_proposals(patient_id, database_session)
     except PatientNotFoundError as exc:
@@ -31,7 +31,7 @@ def pending_proposals(patient_id: int, database_session: Session = Depends(get_d
 
 
 @router.get("/patients/{patient_id}/adaptation/history")
-def decision_history(patient_id: int, database_session: Session = Depends(get_db_session)):
+def decision_history(patient_id: int, database_session: Session = Depends(get_db_session), _access=Depends(require_patient_access)):
     try:
         return adaptation_service.decision_history(patient_id, database_session)
     except PatientNotFoundError as exc:
