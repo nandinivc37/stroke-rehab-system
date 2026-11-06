@@ -42,6 +42,8 @@ def start_session(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except session_service.SessionValidationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except session_service.SessionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(
