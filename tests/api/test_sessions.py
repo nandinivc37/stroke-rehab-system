@@ -144,3 +144,63 @@ def test_session_rejects_wrong_landmark_count(api_client):
 
     assert response.status_code == 422
     api_client.delete(f"/api/v1/sessions/{session_id}")
+
+
+
+def test_live_session_lifecycle_is_persisted(api_client):
+    from src.database.repositories import live_session_repository
+
+    patient_id = create_patient_with_approved_prescription(api_client)
+    started = api_client.post(
+        "/api/v1/sessions", json={"patient_id": patient_id}
+    )
+    assert started.status_code == 201
+    session_id = started.json()["session_id"]
+
+    factory = api_client.app.state.database_session_factory
+    session = factory()
+    try:
+        row = live_session_repository.get_live_session(session, session_id)
+        assert row is not None
+        assert row.patient_id == patient_id
+        assert row.status == "ACTIVE"
+        assert row.frames_received == 0
+    finally:
+        session.close()
+
+    cancelled = api_client.delete(f"/api/v1/sessions/{session_id}")
+    assert cancelled.status_code == 200
+
+    session = factory()
+    try:
+        row = live_session_repository.get_live_session(session, session_id)
+        assert row.status == "CANCELLED"
+        assert row.ended_at is not None
+    finally:
+        session.close()
+
+
+def test_completed_live_session_has_durable_terminal_status(api_client):
+    from src.database.repositories import live_session_repository
+
+    patient_id = create_patient_with_approved_prescription(api_client)
+    started = api_client.post(
+        "/api/v1/sessions", json={"patient_id": patient_id}
+    ).json()
+    session_id = started["session_id"]
+
+    frame = api_client.post(
+        f"/api/v1/sessions/{session_id}/frames",
+        json={"timestamp_s": 0.0, "pose_landmarks": None},
+    )
+    assert frame.status_code == 200
+    completed = api_client.post(f"/api/v1/sessions/{session_id}/complete")
+    assert completed.status_code == 200
+
+    session = api_client.app.state.database_session_factory()
+    try:
+        row = live_session_repository.get_live_session(session, session_id)
+        assert row.status == "COMPLETED"
+        assert row.ended_at is not None
+    finally:
+        session.close()
