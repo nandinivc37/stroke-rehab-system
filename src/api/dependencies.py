@@ -90,7 +90,7 @@ def require_session_access(
     from src.database.repositories import live_session_repository
 
     live = live_session_repository.get_live_session(session, session_id)
-    if live is None:
+    if live is None or live.status != "ACTIVE":
         raise HTTPException(status_code=404, detail="Session was not found.")
     if user["role"] != "admin":
         from src.database.repositories import assignment_repository
