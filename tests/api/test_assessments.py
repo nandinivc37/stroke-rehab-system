@@ -89,7 +89,7 @@ def test_recommendation_requires_therapist_approval(api_client):
     )
     assert approved.status_code == 200
     assert approved.json()["status"] == "APPROVED"
-    assert approved.json()["reviewed_by"] == "Synthetic Therapist"
+    assert approved.json()["reviewed_by"] == "test-therapist"
     assert approved.json()["review_note"] == "Synthetic approval test"
 
     prescription = db.get_active_prescription(patient_id)
@@ -111,7 +111,7 @@ def test_rejected_recommendation_does_not_create_prescription(api_client):
     )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "REJECTED"
-    assert rejected.json()["reviewed_by"] == "Synthetic Therapist"
+    assert rejected.json()["reviewed_by"] == "test-therapist"
     assert db.get_active_prescription(patient_id) is None
 
 
