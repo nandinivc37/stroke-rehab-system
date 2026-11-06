@@ -210,7 +210,8 @@ class SessionManager:
                 )
             if database_session is not None:
                 live_session_repository.finish_live_session(
-                    database_session, session_id, "COMPLETED"
+                    database_session, session_id, "COMPLETED",
+                    frames_received=state.frame_count,
                 )
             del self._sessions[session_id]
 
@@ -225,11 +226,13 @@ class SessionManager:
 
     def cancel(self, session_id, database_session=None):
         with self._lock:
-            if session_id not in self._sessions:
+            state = self._sessions.get(session_id)
+            if state is None:
                 raise SessionNotFoundError("Active session was not found.")
             if database_session is not None:
                 live_session_repository.finish_live_session(
-                    database_session, session_id, "CANCELLED"
+                    database_session, session_id, "CANCELLED",
+                    frames_received=state.frame_count,
                 )
             del self._sessions[session_id]
             return {"session_id": session_id, "status": "CANCELLED"}
