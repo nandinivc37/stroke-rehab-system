@@ -1,7 +1,5 @@
 """FastAPI application entry point for NARS."""
 
-from pathlib import Path
-
 from fastapi import Depends, FastAPI
 
 from src.api.dependencies import get_current_user
@@ -45,19 +43,21 @@ def root():
 
 
 @app.on_event("startup")
-def initialize_authentication():
-    from src.services.auth_service import bootstrap_admin_from_environment, ensure_auth_schema
+def initialize_database_services():
+    from src.services.auth_service import (
+        bootstrap_admin_from_environment,
+        ensure_auth_schema,
+    )
 
-    # The legacy SQLite database remains the shared runtime store while
-    # non-patient services are still being migrated to SQLAlchemy.
+    # The desktop application's legacy SQLite schema is retained. API ORM
+    # repositories use NARS_DATABASE_URL when configured, otherwise that DB.
     db.initialize_database()
-    database_url = "sqlite:///" + Path(db.DB_PATH).resolve().as_posix()
-    engine = create_database_engine(database_url)
+    engine = create_database_engine()
     app.state.database_engine = engine
     app.state.database_session_factory = create_session_factory(engine)
 
-    ensure_auth_schema()
-    bootstrap_admin_from_environment()
+    ensure_auth_schema(engine)
+    bootstrap_admin_from_environment(app.state.database_session_factory)
 
 
 @app.on_event("shutdown")
