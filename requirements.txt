@@ -16,3 +16,6 @@ protobuf==4.25.9
 opencv-contrib-python==4.11.0.86
 PyQt6==6.11.0
 matplotlib==3.11.1
+
+# Optional desktop-to-API integration client
+httpx>=0.27,<1.0
