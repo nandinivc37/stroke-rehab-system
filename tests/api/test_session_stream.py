@@ -6,12 +6,19 @@ from fastapi import WebSocketDisconnect
 from src.services import auth_service
 
 
-def _token(api_client, username="stream-therapist"):
+def _token(api_client, username="stream-therapist", patient_id=None):
+    from src.database.repositories import assignment_repository
+
     session = api_client.app.state.database_session_factory()
     try:
         user = auth_service.create_user(
             session, username, "long-test-password-123", "therapist"
         )
+        if patient_id is not None:
+            assignment_repository.assign_therapist(
+                session, patient_id=patient_id,
+                therapist_user_id=user["user_id"], assigned_by_user_id=2,
+            )
         return auth_service.issue_token(user)["access_token"]
     finally:
         session.close()
@@ -38,7 +45,6 @@ def test_stream_rejects_unknown_session_after_authentication(api_client):
     with pytest.raises(WebSocketDisconnect) as closed:
         with api_client.websocket_connect("/api/v1/sessions/not-a-session/stream") as ws:
             ws.send_json({"type": "authenticate", "access_token": token})
-            assert ws.receive_json()["type"] == "authenticated"
             ws.receive_json()
     assert closed.value.code == 4404
 
@@ -82,7 +88,7 @@ def test_stream_returns_analysis_for_active_session(api_client):
     )
     assert started.status_code == 201
     session_id = started.json()["session_id"]
-    token = _token(api_client, "streaming-therapist")
+    token = _token(api_client, "streaming-therapist", patient_id=patient_id)
 
     with api_client.websocket_connect(
         f"/api/v1/sessions/{session_id}/stream"
