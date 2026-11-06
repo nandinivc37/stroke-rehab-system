@@ -71,7 +71,11 @@ def _validate_source(conn):
         )
     source_tables = _source_tables(conn)
     missing = REQUIRED_TABLES - source_tables
-    unsupported = source_tables - set(TABLE_ORDER)
+    # Live-session rows are process-lifecycle metadata, not completed clinical
+    # history. They must never be migrated because analyzer state cannot be
+    # restored from a database snapshot.
+    operational_tables = {"live_sessions"}
+    unsupported = source_tables - set(TABLE_ORDER) - operational_tables
     if unsupported:
         raise DataMigrationError(
             "Source contains tables that are not mapped for migration: "
