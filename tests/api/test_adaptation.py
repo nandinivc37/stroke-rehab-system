@@ -64,6 +64,9 @@ def test_adaptation_evaluation_rejects_unmatched_session(api_client, monkeypatch
 
 
 def test_adaptation_review_requires_reviewer(api_client):
+    api_client.app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": 2, "username": "test-admin", "role": "admin", "is_active": True,
+    }
     response = api_client.post(
         "/api/v1/adaptation/5/approve",
         json={"reviewer": "   ", "note": "Review"},
