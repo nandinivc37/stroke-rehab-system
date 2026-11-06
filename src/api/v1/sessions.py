@@ -1,9 +1,14 @@
 """Landmark-streaming rehabilitation session endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from src.api.dependencies import get_db_session
+from src.services.auth_service import AuthenticationError, decode_token
 from src.schemas.session import (
     FrameAnalysisRead,
     PoseFrameCreate,
@@ -15,6 +20,7 @@ from src.services import session_service
 from src.services.patient_service import PatientNotFoundError
 
 router = APIRouter(tags=["rehabilitation sessions"])
+stream_router = APIRouter(tags=["rehabilitation streaming"])
 
 
 @router.post(
@@ -63,3 +69,82 @@ def cancel_session(session_id: str):
         return session_service.session_manager.cancel(session_id)
     except session_service.SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+
+@stream_router.websocket("/sessions/{session_id}/stream")
+async def stream_pose_frames(websocket: WebSocket, session_id: str):
+    """Authenticated bidirectional stream of client-computed pose landmarks.
+
+    The client sends an initial {"type": "authenticate", "access_token": "..."}
+    message, then {"type": "frame", "frame": {...}} messages. Raw camera
+    frames are intentionally not accepted by this endpoint.
+    """
+    await websocket.accept()
+    factory = getattr(websocket.app.state, "database_session_factory", None)
+    if factory is None:
+        await websocket.close(code=1011, reason="Database is unavailable.")
+        return
+
+    try:
+        auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+        if not isinstance(auth_message, dict) or auth_message.get("type") != "authenticate":
+            await websocket.close(code=4401, reason="Authentication required.")
+            return
+
+        session = factory()
+        try:
+            user = decode_token(session, str(auth_message.get("access_token", "")))
+        except AuthenticationError:
+            await websocket.close(code=4401, reason="Invalid or expired token.")
+            return
+        finally:
+            session.close()
+
+        if user.get("role") not in {"therapist", "admin"}:
+            await websocket.close(code=4403, reason="Insufficient permissions.")
+            return
+
+        if not session_service.session_manager.has_session(session_id):
+            await websocket.close(code=4404, reason="Active session not found.")
+            return
+
+        await websocket.send_json({"type": "authenticated", "user_id": user["user_id"]})
+
+        while True:
+            message = await websocket.receive_json()
+            if not isinstance(message, dict) or message.get("type") != "frame":
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "invalid_message",
+                    "detail": "Expected a frame message.",
+                })
+                continue
+            try:
+                frame = PoseFrameCreate.model_validate(message.get("frame", {}))
+                analysis = await run_in_threadpool(
+                    session_service.session_manager.add_frame, session_id, frame
+                )
+            except ValidationError as exc:
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "invalid_frame",
+                    "detail": exc.errors(include_url=False),
+                })
+                continue
+            except session_service.SessionValidationError as exc:
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "invalid_frame_sequence",
+                    "detail": str(exc),
+                })
+                continue
+            except session_service.SessionNotFoundError:
+                await websocket.close(code=4404, reason="Active session not found.")
+                return
+
+            await websocket.send_json({"type": "analysis", "data": analysis})
+    except asyncio.TimeoutError:
+        await websocket.close(code=4401, reason="Authentication timed out.")
+    except WebSocketDisconnect:
+        return
