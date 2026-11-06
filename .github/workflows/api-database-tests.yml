@@ -12,6 +12,7 @@ on:
       - "alembic/**"
       - "tests/**"
       - "requirements-api.txt"
+      - "requirements.txt"
       - "Dockerfile"
       - "docker-compose.yml"
       - ".dockerignore"
@@ -70,10 +71,10 @@ jobs:
           python -m pip install -r requirements-api.txt pytest
 
       - name: Validate Python syntax
-        run: python -m compileall -q src/database alembic tests/api tests/database
+        run: python -m compileall -q src/api src/database alembic tests/api tests/database tests/test_api_client.py
 
       - name: Run API and database foundation tests
-        run: python -m pytest -q tests/api tests/database
+        run: python -m pytest -q tests/api tests/database tests/test_api_client.py
 
       - name: Validate Docker Compose configuration
         env:
