@@ -11,7 +11,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from src.database import db
-from src.database.repositories import session_repository, live_session_repository
+from src.database.repositories import (
+    session_repository,
+    live_session_repository,
+    patient_repository,
+    assessment_repository,
+)
 from src.exercises.analyzer import ExerciseAnalyzer
 from src.exercises.catalogue import get_exercise_config
 from src.services.patient_service import get_patient
@@ -48,8 +53,19 @@ class SessionManager:
         self._lock = RLock()
 
     def start(self, patient_id, database_session=None):
-        get_patient(patient_id)
-        prescription = db.get_active_prescription(patient_id)
+        if database_session is None:
+            get_patient(patient_id)
+            prescription = db.get_active_prescription(patient_id)
+            areas = None
+        else:
+            get_patient(patient_id, session=database_session)
+            approved = assessment_repository.list_recommendations(
+                database_session, patient_id, status="APPROVED"
+            )
+            prescription = approved[0] if approved else None
+            areas = patient_repository.list_affected_areas(
+                database_session, patient_id
+            )
         if prescription is None:
             raise SessionValidationError(
                 "The patient does not have an active therapist-approved prescription."
@@ -65,8 +81,11 @@ class SessionManager:
 
         side = (prescription.get("affected_side") or "").upper()
         if not side:
-            areas = db.get_affected_areas(patient_id)
-            side = areas[0][1].upper() if areas else ""
+            if database_session is None:
+                legacy_areas = db.get_affected_areas(patient_id)
+                side = legacy_areas[0][1].upper() if legacy_areas else ""
+            else:
+                side = areas[0].side.upper() if areas else ""
         if side not in config.sides:
             raise SessionValidationError(
                 "The active prescription has no supported affected side."
