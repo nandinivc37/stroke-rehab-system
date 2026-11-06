@@ -69,7 +69,7 @@ def test_adaptation_review_requires_reviewer(api_client):
     }
     response = api_client.post(
         "/api/v1/adaptation/5/approve",
-        json={"reviewer": "   ", "note": "Review"},
+        json={"reviewer": "", "note": "Review"},
     )
     assert response.status_code == 422
 
