@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from src.api.dependencies import get_db_session
+from src.api.dependencies import get_db_session, get_current_user, require_patient_access
 from src.services import progress_service
 from src.services.patient_service import PatientNotFoundError
 
@@ -21,6 +21,7 @@ def patient_progress(
     exercise_id: str | None = None,
     affected_side: str | None = None,
     database_session: Session = Depends(get_db_session),
+    _access=Depends(require_patient_access),
 ):
     try:
         return progress_service.patient_progress(
@@ -39,6 +40,7 @@ def patient_progress_trends(
     exercise_id: str | None = None,
     affected_side: str | None = None,
     database_session: Session = Depends(get_db_session),
+    _access=Depends(require_patient_access),
 ):
     try:
         result = progress_service.patient_progress(
