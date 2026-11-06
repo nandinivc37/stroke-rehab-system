@@ -156,6 +156,18 @@ class AdaptationDecision(Base):
 
 
 
+class PatientTherapistAssignment(Base):
+    """Explicit therapist-to-patient access grant."""
+
+    __tablename__ = "patient_therapist_assignments"
+
+    assignment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.patient_id"), nullable=False)
+    therapist_user_id: Mapped[int] = mapped_column(ForeignKey("api_users.user_id"), nullable=False)
+    assigned_by_user_id: Mapped[int] = mapped_column(ForeignKey("api_users.user_id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
 class LiveSession(Base):
     """Durable lifecycle metadata; live analyzer state remains process-local."""
 
@@ -188,6 +200,9 @@ ApiUser.__table__.append_constraint(
 )
 Index("uq_api_users_username_lower", func.lower(ApiUser.username), unique=True)
 
+
+Index("uq_patient_therapist_assignment", PatientTherapistAssignment.patient_id, PatientTherapistAssignment.therapist_user_id, unique=True)
+Index("ix_patient_assignment_therapist", PatientTherapistAssignment.therapist_user_id)
 
 Index("ix_sessions_patient_date", RehabSession.patient_id, RehabSession.session_date)
 Index("ix_assessments_patient_date", ClinicalAssessment.patient_id, ClinicalAssessment.assessment_date)
