@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from src.api.dependencies import get_db_session, get_current_user, require_patient_access
+from src.api.dependencies import get_db_session, require_patient_access, require_roles
 from src.services import progress_service
 from src.services.patient_service import PatientNotFoundError
 
@@ -11,7 +11,10 @@ router = APIRouter(tags=["progress and dashboard"])
 
 
 @router.get("/dashboard/summary")
-def dashboard_summary(database_session: Session = Depends(get_db_session)):
+def dashboard_summary(
+    database_session: Session = Depends(get_db_session),
+    _admin=Depends(require_roles("admin")),
+):
     return progress_service.dashboard_summary(database_session)
 
 
