@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from src.adaptation.workflow import AdaptationError
-from src.api.dependencies import get_db_session, require_patient_access
+from src.api.dependencies import get_db_session, require_patient_access, require_proposal_access
 from src.schemas.adaptation import AdaptationReview
 from src.services import adaptation_service
 from src.services.patient_service import PatientNotFoundError
@@ -39,10 +39,10 @@ def decision_history(patient_id: int, database_session: Session = Depends(get_db
 
 
 @router.post("/adaptation/{proposal_id}/approve")
-def approve_proposal(proposal_id: int, payload: AdaptationReview, database_session: Session = Depends(get_db_session)):
+def approve_proposal(proposal_id: int, payload: AdaptationReview, database_session: Session = Depends(get_db_session), reviewer=Depends(require_proposal_access)):
     try:
         return adaptation_service.review_proposal(
-            proposal_id, True, payload.reviewer, payload.note, database_session
+            proposal_id, True, reviewer["username"], payload.note, database_session
         )
     except AdaptationError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 409
@@ -50,10 +50,10 @@ def approve_proposal(proposal_id: int, payload: AdaptationReview, database_sessi
 
 
 @router.post("/adaptation/{proposal_id}/reject")
-def reject_proposal(proposal_id: int, payload: AdaptationReview, database_session: Session = Depends(get_db_session)):
+def reject_proposal(proposal_id: int, payload: AdaptationReview, database_session: Session = Depends(get_db_session), reviewer=Depends(require_proposal_access)):
     try:
         return adaptation_service.review_proposal(
-            proposal_id, False, payload.reviewer, payload.note, database_session
+            proposal_id, False, reviewer["username"], payload.note, database_session
         )
     except AdaptationError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 409
