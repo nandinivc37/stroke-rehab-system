@@ -54,10 +54,11 @@ def initialize_database_services():
         ensure_auth_schema,
     )
 
-    # The desktop application's legacy SQLite schema is retained. API ORM
-    # repositories use NARS_DATABASE_URL when configured, otherwise that DB.
-    db.initialize_database()
+    # Initialize the legacy desktop schema only when SQLite is the selected
+    # backend. PostgreSQL API deployments must not create a stray local DB.
     engine = create_database_engine()
+    if engine.dialect.name == "sqlite":
+        db.initialize_database()
     app.state.database_engine = engine
     app.state.database_session_factory = create_session_factory(engine)
 
