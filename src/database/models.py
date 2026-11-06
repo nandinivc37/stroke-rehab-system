@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -160,6 +161,12 @@ class PatientTherapistAssignment(Base):
     """Explicit therapist-to-patient access grant."""
 
     __tablename__ = "patient_therapist_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id", "therapist_user_id",
+            name="uq_patient_therapist_assignment",
+        ),
+    )
 
     assignment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     patient_id: Mapped[int] = mapped_column(ForeignKey("patients.patient_id"), nullable=False)
@@ -201,7 +208,6 @@ ApiUser.__table__.append_constraint(
 Index("uq_api_users_username_lower", func.lower(ApiUser.username), unique=True)
 
 
-Index("uq_patient_therapist_assignment", PatientTherapistAssignment.patient_id, PatientTherapistAssignment.therapist_user_id, unique=True)
 Index("ix_patient_assignment_therapist", PatientTherapistAssignment.therapist_user_id)
 
 Index("ix_sessions_patient_date", RehabSession.patient_id, RehabSession.session_date)
