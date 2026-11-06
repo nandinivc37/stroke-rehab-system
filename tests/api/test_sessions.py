@@ -201,6 +201,7 @@ def test_completed_live_session_has_durable_terminal_status(api_client):
     try:
         row = live_session_repository.get_live_session(session, session_id)
         assert row.status == "COMPLETED"
+        assert row.frames_received == 1
         assert row.ended_at is not None
     finally:
         session.close()
