@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nars}
+      POSTGRES_USER: ${POSTGRES_USER:-nars}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your environment}
+    volumes:
+      - nars_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nars} -d ${POSTGRES_DB:-nars}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NARS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nars}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nars}
+      NARS_JWT_SECRET: ${NARS_JWT_SECRET:?Set NARS_JWT_SECRET in your environment}
+      NARS_BOOTSTRAP_ADMIN_USERNAME: ${NARS_BOOTSTRAP_ADMIN_USERNAME:?Set NARS_BOOTSTRAP_ADMIN_USERNAME}
+      NARS_BOOTSTRAP_ADMIN_PASSWORD: ${NARS_BOOTSTRAP_ADMIN_PASSWORD:?Set NARS_BOOTSTRAP_ADMIN_PASSWORD}
+      NARS_MAX_ACTIVE_SESSIONS: ${NARS_MAX_ACTIVE_SESSIONS:-4}
+      NARS_SESSION_IDLE_TIMEOUT_SECONDS: ${NARS_SESSION_IDLE_TIMEOUT_SECONDS:-900}
+    ports:
+      - "${NARS_API_PORT:-8000}:8000"
+
+volumes:
+  nars_postgres_data:
