@@ -1,14 +1,16 @@
-"""Database-backed API authentication using PBKDF2 and signed JWTs."""
+"""SQLAlchemy-backed API authentication using PBKDF2 and signed JWTs."""
 
 import hashlib
 import hmac
 import os
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import jwt
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from src.database import db
+from src.database.models import ApiUser
+from src.database.repositories import user_repository
 
 ALGORITHM = "HS256"
 PASSWORD_ITERATIONS = 600_000
@@ -23,22 +25,13 @@ class UserConflictError(ValueError):
     pass
 
 
-def ensure_auth_schema():
-    conn = db.get_connection()
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS api_users (
-                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('therapist', 'admin')),
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
-    finally:
-        conn.close()
+def ensure_auth_schema(engine):
+    """Ensure the API account table exists for the local SQLite transition.
+
+    Production databases should be created and upgraded with Alembic. The
+    check-first create is retained for the existing local SQLite workflow.
+    """
+    ApiUser.__table__.create(engine, checkfirst=True)
 
 
 def _secret():
@@ -55,7 +48,10 @@ def _hash_password(password, salt=None):
     digest = hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS
     )
-    return "pbkdf2_sha256$" + str(PASSWORD_ITERATIONS) + "$" + salt.hex() + "$" + digest.hex()
+    return (
+        "pbkdf2_sha256$" + str(PASSWORD_ITERATIONS) + "$"
+        + salt.hex() + "$" + digest.hex()
+    )
 
 
 def _verify_password(password, encoded):
@@ -64,7 +60,9 @@ def _verify_password(password, encoded):
         if scheme != "pbkdf2_sha256":
             return False
         actual = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex),
+            "sha256",
+            password.encode("utf-8"),
+            bytes.fromhex(salt_hex),
             int(iterations),
         )
         return hmac.compare_digest(actual.hex(), digest_hex)
@@ -72,55 +70,45 @@ def _verify_password(password, encoded):
         return False
 
 
-def create_user(username, password, role):
-    ensure_auth_schema()
-    conn = db.get_connection()
+def _user_read(user: ApiUser):
+    return {
+        "user_id": user.user_id,
+        "username": user.username,
+        "role": user.role,
+        "is_active": bool(user.is_active),
+    }
+
+
+def create_user(session: Session, username, password, role):
     try:
-        cursor = conn.execute(
-            """INSERT INTO api_users(username, password_hash, role)
-               VALUES (?, ?, ?)""",
-            (username.strip().lower(), _hash_password(password), role),
+        user = user_repository.create_user(
+            session,
+            username=username,
+            password_hash=_hash_password(password),
+            role=role,
         )
-        conn.commit()
-        return get_user(cursor.lastrowid)
-    except sqlite3.IntegrityError as exc:
+        session.commit()
+        session.refresh(user)
+        return _user_read(user)
+    except IntegrityError as exc:
+        session.rollback()
         raise UserConflictError("That username already exists.") from exc
-    finally:
-        conn.close()
 
 
-def get_user(user_id):
-    conn = db.get_connection()
-    try:
-        row = conn.execute(
-            """SELECT user_id, username, role, is_active
-               FROM api_users WHERE user_id = ?""",
-            (user_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return {
-            "user_id": row[0], "username": row[1],
-            "role": row[2], "is_active": bool(row[3]),
-        }
-    finally:
-        conn.close()
+def get_user(session: Session, user_id):
+    user = user_repository.get_user(session, user_id)
+    return _user_read(user) if user is not None else None
 
 
-def authenticate(username, password):
-    ensure_auth_schema()
-    conn = db.get_connection()
-    try:
-        row = conn.execute(
-            """SELECT user_id, username, password_hash, role, is_active
-               FROM api_users WHERE username = ? COLLATE NOCASE""",
-            (username.strip(),),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None or not row[4] or not _verify_password(password, row[2]):
+def authenticate(session: Session, username, password):
+    user = user_repository.get_user_by_username(session, username)
+    if (
+        user is None
+        or not user.is_active
+        or not _verify_password(password, user.password_hash)
+    ):
         raise AuthenticationError("Invalid username or password.")
-    return {"user_id": row[0], "username": row[1], "role": row[3]}
+    return _user_read(user)
 
 
 def issue_token(user):
@@ -144,19 +132,22 @@ def issue_token(user):
     }
 
 
-def decode_token(token):
+def decode_token(session: Session, token):
     try:
         payload = jwt.decode(token, _secret(), algorithms=[ALGORITHM])
         user_id = int(payload["sub"])
     except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
         raise AuthenticationError("Invalid or expired access token.") from exc
-    user = get_user(user_id)
+
+    # Resolve the account on every request so role changes and deactivation
+    # take effect immediately; never trust role claims embedded in the JWT.
+    user = get_user(session, user_id)
     if user is None or not user["is_active"]:
         raise AuthenticationError("User is inactive or no longer exists.")
     return user
 
 
-def bootstrap_admin_from_environment():
+def bootstrap_admin_from_environment(session_factory):
     username = os.environ.get("NARS_BOOTSTRAP_ADMIN_USERNAME", "").strip()
     password = os.environ.get("NARS_BOOTSTRAP_ADMIN_PASSWORD", "")
     if not username and not password:
@@ -166,14 +157,11 @@ def bootstrap_admin_from_environment():
             "Set both NARS_BOOTSTRAP_ADMIN_USERNAME and a 12+ character "
             "NARS_BOOTSTRAP_ADMIN_PASSWORD, or leave both unset."
         )
-    ensure_auth_schema()
-    conn = db.get_connection()
+
+    session = session_factory()
     try:
-        exists = conn.execute(
-            "SELECT 1 FROM api_users WHERE username = ? COLLATE NOCASE",
-            (username,),
-        ).fetchone()
+        existing = user_repository.get_user_by_username(session, username)
+        if existing is None:
+            create_user(session, username, password, "admin")
     finally:
-        conn.close()
-    if not exists:
-        create_user(username, password, "admin")
+        session.close()
