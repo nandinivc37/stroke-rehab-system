@@ -1,15 +1,32 @@
-"""Authentication and role-based authorization dependencies."""
+"""Authentication, database-session, and role-based authorization dependencies."""
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
 
 from src.services.auth_service import AuthenticationError, decode_token
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def get_db_session(request: Request):
+    """Yield a request-scoped SQLAlchemy session from the app-owned factory."""
+    factory = getattr(request.app.state, "database_session_factory", None)
+    if factory is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database session factory is not initialized.",
+        )
+    session: Session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    session: Session = Depends(get_db_session),
 ):
     if credentials is None:
         raise HTTPException(
@@ -18,7 +35,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return decode_token(credentials.credentials)
+        return decode_token(session, credentials.credentials)
     except AuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -36,18 +53,3 @@ def require_roles(*allowed_roles):
             )
         return user
     return dependency
-
-
-def get_db_session(request: Request):
-    """Yield a request-scoped SQLAlchemy session from the app-owned factory."""
-    factory = getattr(request.app.state, "database_session_factory", None)
-    if factory is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database session factory is not initialized.",
-        )
-    session = factory()
-    try:
-        yield session
-    finally:
-        session.close()
