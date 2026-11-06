@@ -1,6 +1,7 @@
 """API contract tests for adaptive decision support and therapist review."""
 
 from src.adaptation import workflow
+from src.api.dependencies import get_current_user
 
 
 def test_adaptation_routes_are_registered(api_client):
@@ -80,6 +81,9 @@ def test_adaptation_approval_and_rejection_delegate_to_workflow(
         return "APPROVED" if approve else "REJECTED"
 
     monkeypatch.setattr(workflow, "review_proposal", fake_review)
+    api_client.app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": 2, "username": "test-admin", "role": "admin", "is_active": True,
+    }
 
     approved = api_client.post(
         "/api/v1/adaptation/5/approve",
@@ -95,8 +99,8 @@ def test_adaptation_approval_and_rejection_delegate_to_workflow(
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "REJECTED"
     assert calls == [
-        (5, True, "Synthetic Therapist", "Approved in test"),
-        (6, False, "Synthetic Therapist", "Rejected in test"),
+        (5, True, "test-admin", "Approved in test"),
+        (6, False, "test-admin", "Rejected in test"),
     ]
 
 
