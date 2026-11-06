@@ -5,6 +5,7 @@ contract can be tested without a camera or GUI. Keep tokens in memory only.
 """
 
 from urllib.parse import urlparse
+from uuid import UUID
 
 import httpx
 
@@ -95,17 +96,27 @@ class NARSAPIClient:
             "POST", "/api/v1/sessions", json={"patient_id": int(patient_id)}
         )
 
+    @staticmethod
+    def _session_path_id(session_id):
+        try:
+            return str(UUID(str(session_id)))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("Session ID must be a valid UUID.") from exc
+
     def submit_pose_frame(self, session_id, payload):
+        session_id = self._session_path_id(session_id)
         return self._request(
             "POST", f"/api/v1/sessions/{session_id}/frames", json=payload
         )
 
     def complete_session(self, session_id):
+        session_id = self._session_path_id(session_id)
         return self._request(
             "POST", f"/api/v1/sessions/{session_id}/complete"
         )
 
     def cancel_session(self, session_id):
+        session_id = self._session_path_id(session_id)
         return self._request("DELETE", f"/api/v1/sessions/{session_id}")
 
 
