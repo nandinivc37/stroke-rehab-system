@@ -28,9 +28,13 @@ stream_router = APIRouter(tags=["rehabilitation streaming"])
     response_model=SessionStarted,
     status_code=status.HTTP_201_CREATED,
 )
-def start_session(payload: SessionStart):
+def start_session(
+    payload: SessionStart, database_session: Session = Depends(get_db_session)
+):
     try:
-        return session_service.session_manager.start(payload.patient_id)
+        return session_service.session_manager.start(
+            payload.patient_id, database_session=database_session
+        )
     except PatientNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except session_service.SessionValidationError as exc:
@@ -64,9 +68,13 @@ def complete_session(session_id: str, database_session: Session = Depends(get_db
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_200_OK)
-def cancel_session(session_id: str):
+def cancel_session(
+    session_id: str, database_session: Session = Depends(get_db_session)
+):
     try:
-        return session_service.session_manager.cancel(session_id)
+        return session_service.session_manager.cancel(
+            session_id, database_session=database_session
+        )
     except session_service.SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -105,7 +113,17 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
             await websocket.close(code=4403, reason="Insufficient permissions.")
             return
 
-        if not session_service.session_manager.has_session(session_id):
+        lifecycle_session = factory()
+        try:
+            from src.database.repositories import live_session_repository
+            durable = live_session_repository.get_live_session(
+                lifecycle_session, session_id
+            )
+            is_active = durable is not None and durable.status == "ACTIVE"
+        finally:
+            lifecycle_session.close()
+
+        if not is_active or not session_service.session_manager.has_session(session_id):
             await websocket.close(code=4404, reason="Active session not found.")
             return
 
