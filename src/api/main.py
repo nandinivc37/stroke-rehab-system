@@ -4,6 +4,7 @@ from fastapi import Depends, FastAPI
 
 from src.api.dependencies import get_current_user
 from src.database import db
+from src.database.models import Base
 from src.database.sqlalchemy_support import create_database_engine, create_session_factory
 from src.api.v1.auth import router as auth_router
 from src.api.v1.health import router as health_router
@@ -55,6 +56,12 @@ def initialize_database_services():
     engine = create_database_engine()
     app.state.database_engine = engine
     app.state.database_session_factory = create_session_factory(engine)
+
+    # SQLite remains the local development/test database. Create any missing
+    # ORM tables alongside the legacy schema; deployed PostgreSQL databases
+    # must be upgraded explicitly through Alembic.
+    if engine.dialect.name == "sqlite":
+        Base.metadata.create_all(engine)
 
     ensure_auth_schema(engine)
     bootstrap_admin_from_environment(app.state.database_session_factory)
