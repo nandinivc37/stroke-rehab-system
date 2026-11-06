@@ -68,17 +68,16 @@ def initialize_database_services():
         Base.metadata.create_all(engine)
 
     ensure_auth_schema(engine)
-    if engine.dialect.name == "sqlite":
-        from src.database.repositories.live_session_repository import (
-            mark_active_sessions_interrupted,
-        )
-        recovery_session = app.state.database_session_factory()
-        try:
-            # Analyzer state is in-memory; after a restart, never expose a
-            # formerly ACTIVE session as resumable.
-            mark_active_sessions_interrupted(recovery_session)
-        finally:
-            recovery_session.close()
+    from src.database.repositories.live_session_repository import (
+        mark_active_sessions_interrupted,
+    )
+    recovery_session = app.state.database_session_factory()
+    try:
+        # Analyzer state is process-local for both SQLite and PostgreSQL.
+        # A restart must never expose a formerly ACTIVE session as resumable.
+        mark_active_sessions_interrupted(recovery_session)
+    finally:
+        recovery_session.close()
     bootstrap_admin_from_environment(app.state.database_session_factory)
 
 
