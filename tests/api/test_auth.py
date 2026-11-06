@@ -57,6 +57,8 @@ def test_login_rejects_inactive_account(api_client):
 
 
 def test_existing_token_is_rejected_after_account_deactivation(api_client):
+    # Bypass the default therapist override so this test exercises real JWT auth.
+    api_client.app.dependency_overrides.pop(get_current_user, None)
     user = _create_user(api_client, "deactivated", "long-test-password-123", "therapist")
     token = auth_service.issue_token(user)["access_token"]
 
