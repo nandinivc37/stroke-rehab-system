@@ -90,3 +90,42 @@ def test_pose_frame_payload_supports_no_detected_pose():
     )
     assert payload["pose_landmarks"] is None
     assert payload["pose_world_landmarks"] is None
+
+
+def test_session_operations_reject_invalid_session_id_before_network_call():
+    client = make_client(
+        lambda request: pytest.fail("Invalid session IDs must not make requests.")
+    )
+    client._access_token = "test-token"
+    with pytest.raises(ValueError, match="valid UUID"):
+        client.submit_pose_frame("../other-resource", {})
+    with pytest.raises(ValueError, match="valid UUID"):
+        client.complete_session("not-a-uuid")
+    with pytest.raises(ValueError, match="valid UUID"):
+        client.cancel_session("not-a-uuid")
+    client.close()
+
+
+def test_session_methods_use_expected_http_contract():
+    session_id = "12345678-1234-5678-1234-567812345678"
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path.endswith("/frames"):
+            return httpx.Response(200, json={"status": "OK", "reps": 1})
+        if request.method == "POST":
+            return httpx.Response(200, json={"session_id": 22, "status": "COMPLETE"})
+        return httpx.Response(200, json={"session_id": session_id, "status": "CANCELLED"})
+
+    client = make_client(handler)
+    client._access_token = "test-token"
+    assert client.submit_pose_frame(session_id, {"timestamp_s": 1})["reps"] == 1
+    assert client.complete_session(session_id)["status"] == "COMPLETE"
+    assert client.cancel_session(session_id)["status"] == "CANCELLED"
+    assert seen == [
+        ("POST", f"/api/v1/sessions/{session_id}/frames"),
+        ("POST", f"/api/v1/sessions/{session_id}/complete"),
+        ("DELETE", f"/api/v1/sessions/{session_id}"),
+    ]
+    client.close()
