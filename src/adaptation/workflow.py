@@ -45,7 +45,7 @@ def propose_after_session(patient_id, session_id, policy=None, database_session=
     Returns None when the session has no supported active prescription.
     """
 
-    prescription = db.get_active_prescription(patient_id)
+    prescription = _active_prescription(patient_id, database_session)
 
     if prescription is None:
         return None
@@ -58,8 +58,8 @@ def propose_after_session(patient_id, session_id, policy=None, database_session=
         return None
 
     session = next(
-        (s for s in db.get_sessions(patient_id)
-         if s["session_id"] == session_id),
+        (s for s in _patient_sessions(patient_id, database_session)
+         if str(s["session_id"]) == str(session_id)),
         None,
     )
 
@@ -67,7 +67,9 @@ def propose_after_session(patient_id, session_id, policy=None, database_session=
         return None
 
     side = session["affected_side"]
-    history = db.get_sessions(patient_id, exercise.exercise_id, side)
+    history = _patient_sessions(
+        patient_id, database_session, exercise.exercise_id, side
+    )
 
     # Compensation columns are recorded as context only (all NULL while
     # no validated classifier exists); the controller never uses them.
@@ -218,7 +220,7 @@ def review_proposal(proposal_id, approve, reviewer, note="", database_session=No
         if proposal["status"] != STATUS_PENDING:
             raise AdaptationError(f"Proposal is already {proposal['status'].lower()}.")
         if approve:
-            active = db.get_active_prescription(proposal["patient_id"])
+            active = _active_prescription(proposal["patient_id"], database_session)
             if active is None or active["recommendation_id"] != proposal["previous_recommendation_id"]:
                 raise AdaptationError(
                     "The prescription this proposal was based on is no longer active. "
