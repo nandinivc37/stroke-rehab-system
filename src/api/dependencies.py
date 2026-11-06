@@ -53,3 +53,45 @@ def require_roles(*allowed_roles):
             )
         return user
     return dependency
+
+
+
+def require_patient_access(
+    patient_id: int,
+    session: Session = Depends(get_db_session),
+    user=Depends(get_current_user),
+):
+    """Require an explicit therapist assignment; administrators can manage all patients."""
+    if user["role"] == "admin":
+        return user
+    from src.database.repositories import assignment_repository
+
+    if not assignment_repository.therapist_has_patient(
+        session, patient_id=patient_id, therapist_user_id=user["user_id"]
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient was not found.",
+        )
+    return user
+
+
+def require_session_access(
+    session_id: str,
+    session: Session = Depends(get_db_session),
+    user=Depends(get_current_user),
+):
+    """Resolve session ownership before exposing or mutating a live session."""
+    from src.database.repositories import live_session_repository
+
+    live = live_session_repository.get_live_session(session, session_id)
+    if live is None:
+        raise HTTPException(status_code=404, detail="Session was not found.")
+    if user["role"] != "admin":
+        from src.database.repositories import assignment_repository
+
+        if not assignment_repository.therapist_has_patient(
+            session, patient_id=live.patient_id, therapist_user_id=user["user_id"]
+        ):
+            raise HTTPException(status_code=404, detail="Session was not found.")
+    return user
