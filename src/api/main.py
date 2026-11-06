@@ -12,6 +12,7 @@ from src.api.v1.patients import router as patients_router
 from src.api.v1.assessments import router as assessments_router
 from src.api.v1.recommendations import router as recommendations_router
 from src.api.v1.sessions import router as sessions_router
+from src.api.v1.sessions import stream_router as session_stream_router
 from src.api.v1.adaptation import router as adaptation_router
 from src.api.v1.progress import router as progress_router
 
@@ -30,6 +31,9 @@ app.include_router(patients_router, prefix="/api/v1", dependencies=[Depends(get_
 app.include_router(assessments_router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
 app.include_router(recommendations_router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
 app.include_router(sessions_router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
+# WebSocket streaming authenticates with its first message (browser clients
+# cannot attach arbitrary Authorization headers to the native WebSocket API).
+app.include_router(session_stream_router, prefix="/api/v1")
 app.include_router(adaptation_router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
 app.include_router(progress_router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
 
