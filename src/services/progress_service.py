@@ -38,7 +38,7 @@ def _session_read(row):
 
 
 def patient_progress(patient_id, exercise_id=None, affected_side=None, database_session=None):
-    get_patient(patient_id)
+    get_patient(patient_id, session=database_session)
     if database_session is None:
         sessions = db.get_sessions(
             patient_id, exercise_id=exercise_id, affected_side=affected_side
