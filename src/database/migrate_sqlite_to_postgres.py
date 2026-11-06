@@ -74,7 +74,7 @@ def _validate_source(conn):
     # Live-session rows are process-lifecycle metadata, not completed clinical
     # history. They must never be migrated because analyzer state cannot be
     # restored from a database snapshot.
-    operational_tables = {"live_sessions"}
+    operational_tables = {"live_sessions", "patient_therapist_assignments"}
     unsupported = source_tables - set(TABLE_ORDER) - operational_tables
     if unsupported:
         raise DataMigrationError(
