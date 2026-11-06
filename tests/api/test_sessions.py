@@ -205,3 +205,22 @@ def test_completed_live_session_has_durable_terminal_status(api_client):
         assert row.ended_at is not None
     finally:
         session.close()
+
+
+
+def test_api_session_start_uses_configured_orm_database(api_client, monkeypatch):
+    patient_id = create_patient_with_approved_prescription(api_client)
+
+    def legacy_access_forbidden(*args, **kwargs):
+        raise AssertionError("API session start must not read the legacy SQLite layer.")
+
+    monkeypatch.setattr(db, "get_patient", legacy_access_forbidden)
+    monkeypatch.setattr(db, "get_active_prescription", legacy_access_forbidden)
+    monkeypatch.setattr(db, "get_affected_areas", legacy_access_forbidden)
+
+    response = api_client.post(
+        "/api/v1/sessions", json={"patient_id": patient_id}
+    )
+    assert response.status_code == 201
+    assert response.json()["status"] == "ACTIVE"
+    api_client.delete(f"/api/v1/sessions/{response.json()['session_id']}")
