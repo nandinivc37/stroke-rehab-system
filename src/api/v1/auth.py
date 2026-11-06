@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from src.api.dependencies import get_db_session, require_roles
+from src.api.dependencies import get_current_user, get_db_session, require_roles
 from src.schemas.auth import LoginRequest, TokenRead, UserCreate, UserRead
 from src.services import auth_service
 
@@ -21,6 +21,12 @@ def login(payload: LoginRequest, session: Session = Depends(get_db_session)):
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+
+@router.get("/me", response_model=UserRead)
+def read_current_user(user=Depends(get_current_user)):
+    """Return the authenticated account, using its current database role."""
+    return user
 
 
 @router.post(
