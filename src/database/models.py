@@ -156,6 +156,22 @@ class AdaptationDecision(Base):
 
 
 
+class LiveSession(Base):
+    """Durable lifecycle metadata; live analyzer state remains process-local."""
+
+    __tablename__ = "live_sessions"
+
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.patient_id"), nullable=False)
+    prescription_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    exercise_id: Mapped[str] = mapped_column(Text, nullable=False)
+    affected_side: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime)
+    frames_received: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class ApiUser(Base):
     __tablename__ = "api_users"
 
