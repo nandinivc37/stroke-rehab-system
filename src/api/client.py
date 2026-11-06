@@ -4,7 +4,7 @@ The client is deliberately independent of PyQt and MediaPipe so its HTTP
 contract can be tested without a camera or GUI. Keep tokens in memory only.
 """
 
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 import httpx
 
