@@ -21,8 +21,8 @@ def api_client(tmp_path, monkeypatch):
     # Authentication itself is exercised in test_auth.py.
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": 1,
-        "username": "test-therapist",
-        "role": "therapist",
+        "username": "test-admin",
+        "role": "admin",
         "is_active": True,
     }
     try:
