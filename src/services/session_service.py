@@ -109,6 +109,11 @@ class SessionManager:
             pose_world_landmarks=world,
         )
 
+    def has_session(self, session_id):
+        """Return whether an in-memory analyzer is active for this session."""
+        with self._lock:
+            return session_id in self._sessions
+
     def add_frame(self, session_id, frame):
         with self._lock:
             state = self._sessions.get(session_id)
