@@ -17,12 +17,12 @@ def evaluate_session(patient_id, session_id, database_session=None):
 
 
 def pending_proposals(patient_id, database_session=None):
-    get_patient(patient_id)
+    get_patient(patient_id, session=database_session)
     return workflow.pending_proposals(patient_id, database_session=database_session)
 
 
 def decision_history(patient_id, database_session=None):
-    get_patient(patient_id)
+    get_patient(patient_id, session=database_session)
     return workflow.decision_history(patient_id, database_session=database_session)
 
 
