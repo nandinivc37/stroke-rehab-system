@@ -119,3 +119,22 @@ def require_proposal_access(
     ):
         raise HTTPException(status_code=404, detail="Adaptation proposal was not found.")
     return user
+
+
+
+def require_recommendation_access(
+    recommendation_id: int,
+    session: Session = Depends(get_db_session),
+    user=Depends(get_current_user),
+):
+    """Require access to the patient attached to a recommendation."""
+    from src.database.repositories import assessment_repository, assignment_repository
+
+    recommendation = assessment_repository.get_recommendation(session, recommendation_id)
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="Recommendation was not found.")
+    if user["role"] != "admin" and not assignment_repository.therapist_has_patient(
+        session, patient_id=recommendation["patient_id"], therapist_user_id=user["user_id"]
+    ):
+        raise HTTPException(status_code=404, detail="Recommendation was not found.")
+    return user
