@@ -1080,15 +1080,64 @@ does not attempt to open a webcam attached to the server. The backend
 runs the existing `ExerciseAnalyzer` and stores the same versioned
 session summary and frame diagnostics used by the desktop application.
 
-**Deployment limitations:** this session manager currently stores live
-analyzer state in process memory. Run a single API worker for local
-prototype testing; sessions will be lost if the process restarts, and
-this implementation is not ready for multi-worker or clinical deployment.
-A shared session store, authentication/authorization, transport security,
-deployment configuration, and end-to-end client testing are still
-required. Webcam and clinical validation remain incomplete, and the
-existing exercise metrics and thresholds are not clinically validated.
-Do not send identifiable patient data to an unprotected deployment.
+**Deployment limitations:** the session manager stores live analyzer
+state in process memory. The API now bounds active sessions
+(NARS_MAX_ACTIVE_SESSIONS, default 4) and expires idle sessions
+(NARS_SESSION_IDLE_TIMEOUT_SECONDS, default 900 seconds). These controls
+reduce resource leakage but do not make analyzer state shareable. Run
+exactly one API worker; sessions are interrupted on process restart and
+cannot move between workers. Redis alone is not sufficient: a future
+multi-worker design must explicitly handle analyzer state, ordering,
+locking, recovery and durable session summaries. Webcam and clinical
+validation remain incomplete, and the exercise metrics and thresholds are
+not clinically validated. Do not send identifiable patient data to an
+unprotected deployment.
+
+
+
+### Docker prototype deployment
+
+A single-worker Docker Compose deployment is provided for integration
+testing with PostgreSQL 16. It is **not a production or clinical deployment**.
+The API container runs Alembic migrations before starting Uvicorn with one
+worker. Do not increase the worker count: live analyzer state is process-local.
+
+Create a private `.env` file in the repository root (never commit it):
+
+```dotenv
+POSTGRES_DB=nars
+POSTGRES_USER=nars
+POSTGRES_PASSWORD=replace-with-a-long-random-database-password
+NARS_JWT_SECRET=replace-with-a-random-secret-of-at-least-32-bytes
+NARS_BOOTSTRAP_ADMIN_USERNAME=nars-admin
+NARS_BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-unique-password-of-at-least-12-characters
+NARS_MAX_ACTIVE_SESSIONS=4
+NARS_SESSION_IDLE_TIMEOUT_SECONDS=900
+NARS_API_PORT=8000
+```
+
+Generate a JWT secret with
+`python -c 'import secrets; print(secrets.token_urlsafe(48))'`.
+Restrict permissions on the environment file (for example,
+`chmod 600 .env`), then start the prototype:
+
+```bash
+docker compose up --build -d
+docker compose logs -f api
+```
+
+Check `http://localhost:8000/api/v1/health` and open
+`http://localhost:8000/docs` for the API schema. Stop it with
+`docker compose down`; PostgreSQL data remains in the named volume.
+To remove the database volume as well, use `docker compose down -v`
+(irreversible: this deletes the persisted database).
+
+Before any real deployment, add a TLS reverse proxy, managed secrets,
+backups and restore drills, monitoring, rate limiting, audit logging,
+token revocation, and a security review. Multi-worker support requires a
+separate shared-analyzer design and concurrency testing. Webcam and
+clinical validation are separate project gates and are not established
+by passing API tests.
 
 ## Project layout
 
