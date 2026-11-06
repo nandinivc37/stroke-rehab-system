@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from src.api.dependencies import get_db_session, require_patient_access, require_session_access
+from src.api.dependencies import get_db_session, get_current_user, assert_patient_access, require_session_access
 from src.services.auth_service import AuthenticationError, decode_token
 from src.schemas.session import (
     FrameAnalysisRead,
@@ -31,8 +31,9 @@ stream_router = APIRouter(tags=["rehabilitation streaming"])
 def start_session(
     payload: SessionStart,
     database_session: Session = Depends(get_db_session),
-    _access=Depends(require_patient_access),
+    user=Depends(get_current_user),
 ):
+    assert_patient_access(database_session, payload.patient_id, user)
     try:
         return session_service.session_manager.start(
             payload.patient_id, database_session=database_session
