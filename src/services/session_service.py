@@ -87,8 +87,10 @@ class SessionManager:
         return len(expired)
 
     def start(self, patient_id, database_session=None):
-        # Reserve capacity before doing database work so concurrent requests
-        # cannot exceed the configured in-process session limit.
+        # Expire abandoned sessions before evaluating capacity.
+        self.cleanup_idle_sessions(database_session)
+        # Reserve capacity before doing patient/prescription database work so
+        # concurrent requests cannot exceed the configured in-process limit.
         with self._lock:
             if len(self._sessions) + self._starting_sessions >= self.max_active_sessions:
                 raise SessionConflictError(
@@ -96,7 +98,6 @@ class SessionManager:
                 )
             self._starting_sessions += 1
         try:
-            self.cleanup_idle_sessions(database_session)
             return self._start_reserved(patient_id, database_session)
         finally:
             with self._lock:
