@@ -19,3 +19,4 @@ matplotlib==3.11.1
 
 # Optional desktop-to-API integration client
 httpx>=0.27,<1.0
+websockets>=12,<16
