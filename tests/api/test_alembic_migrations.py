@@ -27,13 +27,14 @@ def test_alembic_upgrade_head_creates_versioned_nars_schema(tmp_path, monkeypatc
         "adaptation_decisions",
         "api_users",
         "live_sessions",
+        "patient_therapist_assignments",
     }.issubset(tables)
 
     with engine.connect() as connection:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "0003_live_session_lifecycle"
+    assert version == "0004_patient_therapist_assignments"
 
     with engine.connect() as connection:
         username_index_sql = connection.execute(
