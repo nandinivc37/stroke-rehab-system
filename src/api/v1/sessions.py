@@ -50,10 +50,13 @@ def start_session(
 )
 def submit_pose_frame(
     session_id: str, payload: PoseFrameCreate,
+    database_session: Session = Depends(get_db_session),
     _access=Depends(require_session_access),
 ):
     try:
-        return session_service.session_manager.add_frame(session_id, payload)
+        return session_service.session_manager.add_frame(
+            session_id, payload, database_session=database_session
+        )
     except session_service.SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except session_service.SessionValidationError as exc:
@@ -126,6 +129,7 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
 
         lifecycle_session = factory()
         try:
+            session_service.session_manager.cleanup_idle_sessions(lifecycle_session)
             from src.database.repositories import live_session_repository
             durable = live_session_repository.get_live_session(
                 lifecycle_session, session_id
@@ -158,9 +162,14 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
                 continue
             try:
                 frame = PoseFrameCreate.model_validate(message.get("frame", {}))
-                analysis = await run_in_threadpool(
-                    session_service.session_manager.add_frame, session_id, frame
-                )
+                frame_session = factory()
+                try:
+                    analysis = await run_in_threadpool(
+                        session_service.session_manager.add_frame,
+                        session_id, frame, frame_session,
+                    )
+                finally:
+                    frame_session.close()
             except ValidationError as exc:
                 await websocket.send_json({
                     "type": "error",
