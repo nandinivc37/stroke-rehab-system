@@ -9,7 +9,6 @@ prototype. A shared state store is required before multi-worker deployment.
 import os
 from threading import RLock
 from time import monotonic
-from time import monotonic
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -46,7 +45,6 @@ class _SessionState:
         self.analyzer = analyzer
         self.last_timestamp = None
         self.frame_count = 0
-        self.last_activity_monotonic = monotonic()
         self.last_activity_monotonic = monotonic()
 
 
@@ -235,11 +233,6 @@ class SessionManager:
             state.last_timestamp = frame.timestamp_s
             state.frame_count += 1
             state.last_activity_monotonic = monotonic()
-            state.last_activity_monotonic = monotonic()
-            if database_session is not None:
-                live_session_repository.increment_frame_count(
-                    database_session, session_id
-                )
             return {
                 "status": analysis.status,
                 "angle": analysis.angle,
@@ -257,15 +250,6 @@ class SessionManager:
                 raise SessionValidationError(
                     "A session with no received frames cannot be saved."
                 )
-
-            if monotonic() - state.last_activity_monotonic >= self.idle_timeout_seconds:
-                del self._sessions[session_id]
-                if database_session is not None:
-                    live_session_repository.finish_live_session(
-                        database_session, session_id, "INTERRUPTED",
-                        frames_received=state.frame_count,
-                    )
-                raise SessionNotFoundError("Session expired after inactivity.")
 
             if monotonic() - state.last_activity_monotonic >= self.idle_timeout_seconds:
                 del self._sessions[session_id]
