@@ -21,8 +21,8 @@ def api_client(tmp_path, monkeypatch):
     # Authentication itself is exercised in test_auth.py.
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": 1,
-        "username": "test-admin",
-        "role": "admin",
+        "username": "test-therapist",
+        "role": "therapist",
         "is_active": True,
     }
     try:
@@ -33,13 +33,15 @@ def api_client(tmp_path, monkeypatch):
             try:
                 if seed_session.get(ApiUser, 1) is None:
                     seed_session.add(ApiUser(
-                        user_id=1,
-                        username="test-admin",
-                        password_hash="test-only",
-                        role="admin",
-                        is_active=1,
+                        user_id=1, username="test-therapist",
+                        password_hash="test-only", role="therapist", is_active=1,
                     ))
-                    seed_session.commit()
+                if seed_session.get(ApiUser, 2) is None:
+                    seed_session.add(ApiUser(
+                        user_id=2, username="test-admin",
+                        password_hash="test-only", role="admin", is_active=1,
+                    ))
+                seed_session.commit()
             finally:
                 seed_session.close()
             yield client
