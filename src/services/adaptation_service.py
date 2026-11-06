@@ -5,7 +5,7 @@ from src.services.patient_service import get_patient
 
 
 def evaluate_session(patient_id, session_id, database_session=None):
-    get_patient(patient_id)
+    get_patient(patient_id, session=database_session)
     result = workflow.propose_after_session(
         patient_id, session_id, database_session=database_session
     )
