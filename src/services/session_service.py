@@ -6,6 +6,7 @@ Session analyzer state is process-local; use one API worker for this
 prototype. A shared state store is required before multi-worker deployment.
 """
 
+import os
 from threading import RLock
 from types import SimpleNamespace
 from uuid import uuid4
@@ -48,11 +49,33 @@ class _SessionState:
 class SessionManager:
     """Owns analyzer instances and serializes updates per session."""
 
-    def __init__(self):
+    def __init__(self, max_active_sessions=None):
         self._sessions = {}
+        self._starting_sessions = 0
         self._lock = RLock()
+        configured_limit = max_active_sessions or int(
+            os.getenv("NARS_MAX_ACTIVE_SESSIONS", "4")
+        )
+        if configured_limit < 1:
+            raise ValueError("NARS_MAX_ACTIVE_SESSIONS must be at least 1.")
+        self.max_active_sessions = configured_limit
 
     def start(self, patient_id, database_session=None):
+        # Reserve capacity before doing database work so concurrent requests
+        # cannot exceed the configured in-process session limit.
+        with self._lock:
+            if len(self._sessions) + self._starting_sessions >= self.max_active_sessions:
+                raise SessionConflictError(
+                    "The API has reached its active rehabilitation session limit."
+                )
+            self._starting_sessions += 1
+        try:
+            return self._start_reserved(patient_id, database_session)
+        finally:
+            with self._lock:
+                self._starting_sessions -= 1
+
+    def _start_reserved(self, patient_id, database_session=None):
         if database_session is None:
             get_patient(patient_id)
             prescription = db.get_active_prescription(patient_id)
