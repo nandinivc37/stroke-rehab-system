@@ -28,6 +28,23 @@ def test_therapist_only_sees_assigned_patient(api_client):
     finally:
         session.close()
 
+    # Patient creation under the default therapist auto-assigns both records.
+    # Remove one grant so the test can verify the isolation boundary.
+    from src.database.repositories import assignment_repository
+    session = factory()
+    try:
+        from sqlalchemy import delete
+        from src.database.models import PatientTherapistAssignment
+        session.execute(delete(PatientTherapistAssignment).where(
+            PatientTherapistAssignment.patient_id == patient_b["patient_id"]
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    api_client.app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": 2, "username": "test-admin", "role": "admin", "is_active": True,
+    }
     assignment = api_client.put(
         f"/api/v1/patients/{patient_a['patient_id']}/therapists/{therapist_id}"
     )
@@ -56,8 +73,8 @@ def test_therapist_only_sees_assigned_patient(api_client):
     finally:
         api_client.app.dependency_overrides[get_current_user] = lambda: {
             "user_id": 1,
-            "username": "test-admin",
-            "role": "admin",
+            "username": "test-therapist",
+            "role": "therapist",
             "is_active": True,
         }
 
@@ -75,7 +92,7 @@ def test_therapist_cannot_assign_patients(api_client):
     finally:
         api_client.app.dependency_overrides[get_current_user] = lambda: {
             "user_id": 1,
-            "username": "test-admin",
-            "role": "admin",
+            "username": "test-therapist",
+            "role": "therapist",
             "is_active": True,
         }
