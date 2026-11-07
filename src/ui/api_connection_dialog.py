@@ -1,5 +1,7 @@
 """Small login dialog for connecting the desktop app to a NARS API."""
 
+from urllib.parse import urlparse
+
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -44,7 +46,17 @@ class APIConnectionDialog(QDialog):
     def _connect(self):
         client = None
         try:
-            client = NARSAPIClient(self.url_input.text().strip())
+            base_url = self.url_input.text().strip()
+            parsed = urlparse(base_url)
+            if (
+                parsed.scheme == "http"
+                and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            ):
+                raise ValueError(
+                    "Use an HTTPS URL for remote API servers. Plain HTTP is "
+                    "allowed only for localhost development."
+                )
+            client = NARSAPIClient(base_url)
             user = client.login(
                 self.username_input.text().strip(),
                 self.password_input.text(),
