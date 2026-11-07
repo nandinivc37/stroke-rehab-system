@@ -7,6 +7,7 @@ on:
     paths:
       - "src/database/**"
       - "src/api/**"
+      - "src/ui/**"
       - "src/services/**"
       - "src/schemas/**"
       - "alembic/**"
@@ -21,6 +22,8 @@ on:
   pull_request:
     paths:
       - "src/database/**"
+      - "src/ui/**"
+      - "src/api/**"
       - "alembic/**"
       - "tests/**"
       - "requirements-api.txt"
