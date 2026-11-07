@@ -1,6 +1,7 @@
 """Landmark-streaming rehabilitation session endpoints."""
 
 import asyncio
+import json
 import os
 from time import monotonic
 
@@ -113,7 +114,22 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
         return
 
     try:
-        auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+        try:
+            max_message_bytes = int(os.getenv("NARS_WS_MAX_MESSAGE_BYTES", "65536"))
+        except ValueError:
+            max_message_bytes = 65536
+        if max_message_bytes < 1:
+            max_message_bytes = 65536
+
+        auth_text = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+        if len(auth_text.encode("utf-8")) > max_message_bytes:
+            await websocket.close(code=1009, reason="Message exceeds size limit.")
+            return
+        try:
+            auth_message = json.loads(auth_text)
+        except json.JSONDecodeError:
+            await websocket.close(code=4401, reason="Authentication required.")
+            return
         if not isinstance(auth_message, dict) or auth_message.get("type") != "authenticate":
             await websocket.close(code=4401, reason="Authentication required.")
             return
@@ -162,7 +178,24 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
         frames_in_window = 0
 
         while True:
-            message = await websocket.receive_json()
+            message_text = await websocket.receive_text()
+            if len(message_text.encode("utf-8")) > max_message_bytes:
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "message_too_large",
+                    "detail": "WebSocket message exceeds the configured size limit.",
+                })
+                await websocket.close(code=1009, reason="Message exceeds size limit.")
+                return
+            try:
+                message = json.loads(message_text)
+            except json.JSONDecodeError:
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "invalid_message",
+                    "detail": "Message must contain valid JSON.",
+                })
+                continue
             if not isinstance(message, dict) or message.get("type") != "frame":
                 await websocket.send_json({
                     "type": "error",
