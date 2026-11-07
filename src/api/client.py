@@ -34,6 +34,19 @@ class NARSAPIClient:
     def is_authenticated(self):
         return self._access_token is not None
 
+    @property
+    def access_token(self):
+        """Return the in-memory token for authenticated companion transports."""
+        return self._access_token
+
+    def websocket_url(self, path):
+        """Build a ws(s) URL from an absolute API path without altering its route."""
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError("WebSocket path must start with a slash.")
+        scheme = "wss" if self.base_url.startswith("https://") else "ws"
+        authority = self.base_url.split("://", 1)[1]
+        return f"{scheme}://{authority}{path}"
+
     def close(self):
         self._client.close()
         self._access_token = None
