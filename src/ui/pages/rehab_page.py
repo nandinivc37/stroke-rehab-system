@@ -364,17 +364,36 @@ class RehabPage(QWidget):
     # Patient loading
     # -----------------------------------------------------
 
+    def set_api_client(self, api_client=None):
+        """Switch only the rehabilitation workflow between local and API data."""
+        if self.live_widget is not None:
+            raise RuntimeError("Cannot change API connection during a live session.")
+        self.api_client = api_client
+        self.remote_session = None
+        self.load_patients()
+
     def load_patients(self):
 
         self.patient_combo.blockSignals(True)
         self.patient_combo.clear()
 
-        patients = get_all_patients()
+        try:
+            patients = (
+                self.api_client.list_patients()
+                if self.api_client is not None
+                else get_all_patients()
+            )
+        except APIClientError as error:
+            patients = []
+            self.session_status.setText(f"Could not load API patients: {error}")
 
         for patient in patients:
-
-            patient_id = patient[0]
-            name = patient[1]
+            if self.api_client is not None:
+                patient_id = patient["patient_id"]
+                name = patient["name"]
+            else:
+                patient_id = patient[0]
+                name = patient[1]
 
             self.patient_combo.addItem(
                 f"{patient_id} - {name}",
@@ -386,11 +405,13 @@ class RehabPage(QWidget):
         if self.patient_combo.count() > 0:
             self.patient_changed(0)
         else:
-            # No patients (e.g. the last one was deleted).
             self.current_patient_id = None
-            self._clear_prescription(
-                "Exercise: —", "Register a patient to begin."
+            empty_message = (
+                "No patients are available to this API account."
+                if self.api_client is not None
+                else "Register a patient to begin."
             )
+            self._clear_prescription("Exercise: —", empty_message)
 
     # -----------------------------------------------------
     # Patient changed
