@@ -782,7 +782,7 @@ class RehabPage(QWidget):
                     self.current_patient_id, self.last_session_id
                 )
                 if self.last_adaptation is not None:
-                    adaptation_text = "\\n" + self.last_adaptation["feedback"]
+                    adaptation_text = "\n" + self.last_adaptation["feedback"]
                     if self.last_adaptation.get("proposal_id") is not None:
                         adaptation_text += (
                             " (Proposed change awaiting therapist approval.)"
