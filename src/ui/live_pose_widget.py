@@ -70,6 +70,36 @@ DEBUG_OVERLAY_ENV = "REHAB_DEBUG_OVERLAY"
 RECORD_LANDMARKS_ENV = "REHAB_RECORD_LANDMARKS"
 
 
+def _pose_frame_payload(results, timestamp_s, image_width, image_height):
+    """Serialize the client-side MediaPipe result for the API landmark contract."""
+    def serialize(collection):
+        if collection is None:
+            return None
+        return [
+            {
+                "x": float(point.x),
+                "y": float(point.y),
+                "z": float(point.z),
+                "visibility": float(getattr(point, "visibility", 1.0)),
+                "presence": (
+                    float(point.presence)
+                    if getattr(point, "presence", None) is not None else None
+                ),
+            }
+            for point in collection.landmark
+        ]
+
+    return {
+        "timestamp_s": float(timestamp_s),
+        "pose_landmarks": serialize(getattr(results, "pose_landmarks", None)),
+        "pose_world_landmarks": serialize(
+            getattr(results, "pose_world_landmarks", None)
+        ),
+        "image_width": int(image_width),
+        "image_height": int(image_height),
+    }
+
+
 def _deg(value):
     return "—" if value is None else f"{value:.0f}°"
 
@@ -213,6 +243,8 @@ class CaptureWorker(QThread):
 
 class LivePoseWidget(QWidget):
 
+    pose_frame_ready = pyqtSignal(object)
+
     def __init__(
         self,
         exercise=None,
@@ -263,6 +295,7 @@ class LivePoseWidget(QWidget):
         self.debug_overlay = os.environ.get(DEBUG_OVERLAY_ENV) == "1"
         self.recorder = None
         self._debug_text = None
+        self._last_pose_payload = None
 
         self.video_label = QLabel()
         self.video_label.setAlignment(
@@ -410,6 +443,7 @@ class LivePoseWidget(QWidget):
         self.analysis_halted = False
         self._display_pending = False
         self._timings = {"read": [], "inference": [], "analysis": []}
+        self._last_pose_payload = None
 
     def _start_recorder(self):
         path = os.environ.get(RECORD_LANDMARKS_ENV)
@@ -549,7 +583,8 @@ class LivePoseWidget(QWidget):
 
         return {"display": display, "status": status, "fps": self._fps(),
                 "compensation": self._compensation_feedback,
-                "debug": self._debug_text}
+                "debug": self._debug_text,
+                "pose_frame": self._last_pose_payload}
 
     def recent_fps(self):
         """Processed frames per second over the last few frames."""
@@ -591,6 +626,9 @@ class LivePoseWidget(QWidget):
         t0 = time.perf_counter()
         results = self.pose.process(rgb)
         t1 = time.perf_counter()
+        self._last_pose_payload = _pose_frame_payload(
+            results, timestamp, frame.shape[1], frame.shape[0]
+        )
 
         analysis = self.analyzer.update(
             results,
@@ -665,6 +703,8 @@ class LivePoseWidget(QWidget):
 
         if output.get("display") is not None:
             self._show(output["display"])
+        if output.get("pose_frame") is not None:
+            self.pose_frame_ready.emit(output["pose_frame"])
         self._display_pending = False
 
         if output.get("status"):
