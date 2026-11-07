@@ -570,6 +570,20 @@ class RehabPage(QWidget):
             )
             return
 
+        if self.api_client is not None:
+            try:
+                self.remote_session = RemoteRehabSession(
+                    self.api_client,
+                    on_error=lambda error: self.remote_stream_error.emit(str(error)),
+                )
+                self.remote_session.start(self.current_patient_id)
+            except (RemoteSessionError, APIClientError) as error:
+                self.remote_session = None
+                QMessageBox.critical(
+                    self, "Remote Session Could Not Start", str(error)
+                )
+                return
+
         # ---------------------------------------------
         # Live camera (created first: it owns the analyzer whose
         # reference movement is displayed and used for scoring)
@@ -580,6 +594,10 @@ class RehabPage(QWidget):
             affected_side=self.current_side,
             parameters=self.current_parameters,
         )
+        if self.remote_session is not None:
+            self.live_widget.pose_frame_ready.connect(
+                self._submit_remote_pose_frame
+            )
 
         self.camera_card.layout().replaceWidget(
             self.camera_placeholder,
@@ -624,6 +642,12 @@ class RehabPage(QWidget):
                 "Camera could not be opened.\n"
                 "Connect a webcam and try again."
             )
+            if self.remote_session is not None:
+                try:
+                    self.remote_session.cancel()
+                except RemoteSessionError:
+                    logger.exception("Could not cancel session after camera failure")
+                self.remote_session = None
             self.session_status.setText(
                 "Camera could not be opened. No session was started."
             )
@@ -636,6 +660,20 @@ class RehabPage(QWidget):
         self.session_status.setText(
             f"Performing {self.current_exercise}. "
             f"Follow the reference movement."
+        )
+
+    def _submit_remote_pose_frame(self, payload):
+        if self.remote_session is None:
+            return
+        try:
+            self.remote_session.submit_frame(payload)
+        except RemoteSessionError as error:
+            self.remote_stream_error.emit(str(error))
+
+    def _handle_remote_stream_error(self, message):
+        self.session_status.setText(
+            "Remote pose stream interrupted. End the session; "
+            f"the backend will not mark this attempt complete. {message}"
         )
 
     # -----------------------------------------------------
