@@ -378,6 +378,7 @@ class RehabPage(QWidget):
         self.patient_combo.blockSignals(True)
         self.patient_combo.clear()
 
+        load_error = None
         try:
             patients = (
                 self.api_client.list_patients()
@@ -386,7 +387,7 @@ class RehabPage(QWidget):
             )
         except APIClientError as error:
             patients = []
-            self.session_status.setText(f"Could not load API patients: {error}")
+            load_error = str(error)
 
         for patient in patients:
             if self.api_client is not None:
@@ -408,9 +409,13 @@ class RehabPage(QWidget):
         else:
             self.current_patient_id = None
             empty_message = (
-                "No patients are available to this API account."
-                if self.api_client is not None
-                else "Register a patient to begin."
+                f"Could not load API patients: {load_error}"
+                if load_error else
+                (
+                    "No patients are available to this API account."
+                    if self.api_client is not None
+                    else "Register a patient to begin."
+                )
             )
             self._clear_prescription("Exercise: —", empty_message)
 
@@ -472,8 +477,13 @@ class RehabPage(QWidget):
         if prescription is None:
             self._clear_prescription(
                 "Exercise: No approved exercise",
-                "No approved exercise found. "
-                "Go to Assessment and approve an exercise first.",
+                (
+                    "No approved exercise is available in the API database. "
+                    "A therapist must approve a supported prescription there."
+                    if self.api_client is not None else
+                    "No approved exercise found. "
+                    "Go to Assessment and approve an exercise first."
+                ),
             )
             return
 
