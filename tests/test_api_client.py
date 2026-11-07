@@ -129,3 +129,34 @@ def test_session_methods_use_expected_http_contract():
         ("DELETE", f"/api/v1/sessions/{session_id}"),
     ]
     client.close()
+
+def test_remote_prescription_and_affected_area_requests():
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, request.url.params))
+        if request.url.path.endswith("/affected-areas"):
+            return httpx.Response(200, json=[{"side": "LEFT"}])
+        return httpx.Response(200, json=[{
+            "recommendation_id": 4,
+            "exercise_id": "shoulder_flexion",
+            "status": "APPROVED",
+        }])
+
+    client = make_client(handler)
+    client._access_token = "test-token"
+
+    areas = client.list_affected_areas(12)
+    recommendations = client.list_recommendations(
+        12, status_filter="APPROVED"
+    )
+
+    assert areas[0]["side"] == "LEFT"
+    assert recommendations[0]["status"] == "APPROVED"
+    assert seen[0][1] == "/api/v1/patients/12/affected-areas"
+    assert seen[1][1] == "/api/v1/patients/12/recommendations"
+    assert seen[1][2]["status_filter"] == "APPROVED"
+
+    with pytest.raises(ValueError, match="Unsupported recommendation"):
+        client.list_recommendations(12, status_filter="UNKNOWN")
+    client.close()
