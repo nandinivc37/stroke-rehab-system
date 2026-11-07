@@ -53,6 +53,40 @@ python -m pyflakes src tests         # static check
 packages on some machines' `PYTHONPATH` register incompatible plugins.
 Tests never touch `data/rehab.db`: they use temporary databases.
 
+## Desktop API mode
+
+The desktop application can run in its existing local-database mode or
+connect its Rehabilitation page to the FastAPI backend:
+
+1. Start the API and PostgreSQL services using the deployment instructions
+   below, and provision a therapist or administrator account.
+2. In the desktop app, choose **Connect to API** in the sidebar. Enter the
+   API base URL and therapist/admin credentials. The access token is kept
+   in memory only and is cleared when the client disconnects or closes.
+3. The Rehabilitation page loads patients assigned to that account and
+   their latest approved exercise prescription from the API. The backend
+   must already contain those patients and approved prescriptions.
+4. Starting an exercise creates a backend session and an authenticated
+   WebSocket. Webcam capture and MediaPipe inference remain on the desktop;
+   only the 33-point pose landmarks, timestamps and image dimensions are
+   sent to the API. The backend runs the session analyzer, stores the
+   completed summary, and evaluates the adaptive policy.
+5. Disconnecting returns the Rehabilitation page to local mode. Other
+   desktop pages remain on the local database during this transition; the
+   API-backed patient/assessment administration screens are not yet
+   integrated.
+
+If the camera cannot open, the remote session is cancelled. If the pose
+stream fails, the attempt is not marked complete or evaluated for
+adaptation. End the session to close the failed remote attempt.
+
+This is an integration prototype, not a clinical deployment. Do not use
+real patient data or expose the API publicly until HTTPS, secret
+management, access auditing, backups, monitoring, rate limiting and a
+security review are in place. The live analyzer is process-local and the
+API must run with one worker until shared analyzer state and recovery are
+implemented.
+
 ## Using the application
 
 1. **Patients** — add a patient and the affected side/joint.
