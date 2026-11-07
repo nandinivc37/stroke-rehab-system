@@ -15,6 +15,7 @@ class FakeStream:
         self.on_analysis = kwargs.get("on_analysis")
         self.on_error = kwargs.get("on_error")
         self.frames = []
+        self.dropped_frames = 0
         self.flush_called = False
         self.stop_called = False
         self.is_ready = True
@@ -81,6 +82,7 @@ def test_remote_session_starts_streams_flushes_and_completes():
     assert started["session_id"] == SESSION_ID
     assert coordinator.state == "COMPLETED"
     assert coordinator.frames_submitted == 1
+    assert coordinator.dropped_frames == 0
     assert streams[0].url == (
         f"wss://nars.example/api/v1/sessions/{SESSION_ID}/stream"
     )
