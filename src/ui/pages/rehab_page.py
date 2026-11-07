@@ -773,6 +773,7 @@ class RehabPage(QWidget):
                 )
                 return None
 
+            dropped_frames = remote.dropped_frames
             try:
                 completed = remote.complete()
                 self.last_session_id = completed["session_id"]
@@ -805,7 +806,7 @@ class RehabPage(QWidget):
                     adaptation_text = "\n" + self.last_adaptation["feedback"]
                     if self.last_adaptation.get("proposal_id") is not None:
                         adaptation_text += (
-                            " (Proposed change awaiting therapist approval.)"
+                            " (Proposed change awaiting therapist approval through the API.)"
                         )
             except APIClientError as error:
                 logger.exception("Remote adaptation evaluation failed")
