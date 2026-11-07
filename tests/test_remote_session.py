@@ -135,3 +135,24 @@ def test_remote_session_does_not_complete_without_frames():
     coordinator.cancel()
     assert coordinator.state == "CANCELLED"
     api.close()
+
+def test_remote_session_forwards_backend_analysis_callback():
+    api, _ = make_api_client()
+    streams = []
+    received = []
+    coordinator = RemoteRehabSession(
+        api,
+        on_analysis=received.append,
+        stream_factory=lambda *args, **kwargs: streams.append(
+            FakeStream(*args, **kwargs)
+        ) or streams[-1],
+    )
+
+    coordinator.start(12)
+    streams[0].on_analysis({"status": "OK", "reps": 2, "angle": 45.0})
+
+    assert received == [
+        {"status": "OK", "reps": 2, "angle": 45.0}
+    ]
+    coordinator.cancel()
+    api.close()
