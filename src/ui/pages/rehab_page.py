@@ -713,6 +713,93 @@ class RehabPage(QWidget):
         self.stop_button.setEnabled(False)
         self.patient_combo.setEnabled(True)
 
+        if self.api_client is not None:
+            remote = self.remote_session
+            if remote is None:
+                self.session_status.setText(
+                    "Remote session state is unavailable; no local-only save was attempted."
+                )
+                return None
+
+            if not interactive or stats["frames_total"] == 0:
+                try:
+                    remote.cancel()
+                except RemoteSessionError as error:
+                    logger.exception("Could not cancel incomplete remote session")
+                    self.session_status.setText(
+                        f"Incomplete remote session could not be cancelled: {error}"
+                    )
+                    return None
+                finally:
+                    self.remote_session = None
+                self.session_status.setText(
+                    "Session ended without completion. It was cancelled and "
+                    "will not be used for adaptation."
+                    if interactive else
+                    "Application closed during the session. The incomplete "
+                    "remote attempt was cancelled."
+                )
+                return None
+
+            if remote.state != "ACTIVE":
+                try:
+                    remote.cancel()
+                except RemoteSessionError:
+                    logger.exception("Could not cancel failed remote session")
+                self.remote_session = None
+                self.session_status.setText(
+                    "The remote pose stream failed. This attempt was not "
+                    "completed or used for adaptation."
+                )
+                return None
+
+            try:
+                completed = remote.complete()
+                self.last_session_id = completed["session_id"]
+            except RemoteSessionError as error:
+                try:
+                    remote.cancel()
+                except RemoteSessionError:
+                    logger.exception("Could not cancel failed remote completion")
+                self.remote_session = None
+                self.session_status.setText(
+                    f"Remote session could not be saved: {error}"
+                )
+                if interactive:
+                    QMessageBox.critical(
+                        self, "Remote Session Not Saved", str(error)
+                    )
+                return None
+
+            self.remote_session = None
+            if not interactive:
+                return self.last_session_id
+
+            self.last_adaptation = None
+            adaptation_text = ""
+            try:
+                self.last_adaptation = self.api_client.evaluate_adaptation(
+                    self.current_patient_id, self.last_session_id
+                )
+                if self.last_adaptation is not None:
+                    adaptation_text = "\\n" + self.last_adaptation["feedback"]
+                    if self.last_adaptation.get("proposal_id") is not None:
+                        adaptation_text += (
+                            " (Proposed change awaiting therapist approval.)"
+                        )
+            except APIClientError as error:
+                logger.exception("Remote adaptation evaluation failed")
+                adaptation_text = (
+                    f"\\nSession saved; adaptation evaluation failed: {error}"
+                )
+
+            self._reload_prescription()
+            self.session_status.setText(
+                self._summary_text(completed.get("summary") or stats)
+                + adaptation_text
+            )
+            return self.last_session_id
+
         if stats["frames_total"] == 0:
             self.session_status.setText(
                 "No camera frames were processed, so the session was "
