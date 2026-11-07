@@ -160,3 +160,22 @@ def test_remote_prescription_and_affected_area_requests():
     with pytest.raises(ValueError, match="Unsupported recommendation"):
         client.list_recommendations(12, status_filter="UNKNOWN")
     client.close()
+
+def test_adaptation_evaluation_uses_saved_remote_session_id():
+    session_id = 321
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        return httpx.Response(200, json={"decision": "MAINTAIN"})
+
+    client = make_client(handler)
+    client._access_token = "test-token"
+    result = client.evaluate_adaptation(12, session_id)
+
+    assert result["decision"] == "MAINTAIN"
+    assert seen == [(
+        "POST",
+        "/api/v1/patients/12/sessions/321/adaptation/evaluate",
+    )]
+    client.close()
