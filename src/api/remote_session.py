@@ -80,6 +80,10 @@ class RemoteRehabSession:
             )
             stream.start()
             with self._lock:
+                if self._state == "FAILED":
+                    raise RemoteSessionError(
+                        f"Pose stream failed during startup: {self._last_error}"
+                    )
                 self.session = created
                 self.stream = stream
                 self._state = "ACTIVE"
@@ -129,16 +133,17 @@ class RemoteRehabSession:
             stream = self.stream
             session_id = self.session["session_id"]
 
-        if stream is not None:
-            stream.stop()
         try:
+            if stream is not None:
+                stream.flush(timeout=15.0)
+                stream.stop()
             result = self.api_client.complete_session(session_id)
-        except APIClientError as exc:
+        except Exception as exc:
             with self._lock:
                 self._state = "FAILED"
                 self._last_error = exc
             raise RemoteSessionError(
-                f"Pose stream stopped, but the API could not save the session: {exc}"
+                f"Pose stream could not be safely completed: {exc}"
             ) from exc
 
         with self._lock:
