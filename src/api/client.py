@@ -104,6 +104,22 @@ class NARSAPIClient:
     def get_patient(self, patient_id):
         return self._request("GET", f"/api/v1/patients/{int(patient_id)}")
 
+    def list_affected_areas(self, patient_id):
+        return self._request(
+            "GET", f"/api/v1/patients/{int(patient_id)}/affected-areas"
+        )
+
+    def list_recommendations(self, patient_id, *, status_filter=None):
+        params = {}
+        if status_filter is not None:
+            if status_filter not in {"PENDING", "APPROVED", "REJECTED"}:
+                raise ValueError("Unsupported recommendation status filter.")
+            params["status_filter"] = status_filter
+        return self._request(
+            "GET", f"/api/v1/patients/{int(patient_id)}/recommendations",
+            params=params,
+        )
+
     def start_session(self, patient_id):
         return self._request(
             "POST", "/api/v1/sessions", json={"patient_id": int(patient_id)}
