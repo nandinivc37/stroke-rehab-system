@@ -291,6 +291,16 @@ class LivePoseWidget(QWidget):
             font-weight: 600;
         """)
 
+        self.remote_analysis_label = QLabel(
+            "Backend analysis: not connected"
+        )
+        self.remote_analysis_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.remote_analysis_label.setWordWrap(True)
+        self.remote_analysis_label.setStyleSheet(
+            "color: #1d4ed8; font-size: 12px; font-weight: 600;"
+        )
+        self.remote_analysis_label.setVisible(False)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -330,6 +340,7 @@ class LivePoseWidget(QWidget):
         layout.addWidget(self.fps_label)
         layout.addWidget(self.compensation_label)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.remote_analysis_label)
         layout.addWidget(self.debug_label)
 
         # Unthreaded fallback (threaded=False).
@@ -659,6 +670,26 @@ class LivePoseWidget(QWidget):
             self._compensation_feedback = (
                 "Posture check (experimental): unable to assess "
                 f"(error: {type(error).__name__})", "info")
+
+    def enable_remote_analysis(self, enabled=True):
+        """Show the latest backend-side analysis in API-connected mode."""
+        self.remote_analysis_label.setVisible(enabled)
+        if enabled:
+            self.remote_analysis_label.setText(
+                "Backend analysis: waiting for the first streamed frame"
+            )
+
+    def set_remote_analysis(self, data):
+        status = str(data.get("status", "unknown"))
+        reps = data.get("reps", "—")
+        angle = data.get("angle")
+        plane = data.get("plane")
+        angle_text = "—" if angle is None else f"{float(angle):.1f}°"
+        plane_text = "—" if plane is None else f"{float(plane):.1f}°"
+        self.remote_analysis_label.setText(
+            f"Backend analysis: {status} · reps {reps} · "
+            f"angle {angle_text} · plane {plane_text}"
+        )
 
     def _set_compensation_label(self, text, level):
         background, colour = COMPENSATION_COLOURS.get(
