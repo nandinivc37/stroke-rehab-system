@@ -10,6 +10,7 @@ import json
 import queue
 import threading
 from urllib.parse import urlparse
+from time import monotonic, sleep
 
 
 class PoseStreamError(RuntimeError):
@@ -96,6 +97,18 @@ class PoseStreamClient:
                 pass
             self.dropped_frames += 1
             self._frames.put_nowait(encoded)
+
+    def flush(self, timeout=None):
+        """Wait for queued frames to receive their matching analysis response."""
+        deadline = None if timeout is None else monotonic() + timeout
+        while self._frames.unfinished_tasks:
+            if self._error is not None:
+                raise PoseStreamError(str(self._error)) from self._error
+            if self._thread is not None and not self._thread.is_alive():
+                raise PoseStreamError("Pose stream stopped before queued frames were processed.")
+            if deadline is not None and monotonic() >= deadline:
+                raise PoseStreamError("Timed out waiting for queued pose frames to finish.")
+            sleep(0.01)
 
     def stop(self, join_timeout=None):
         self._stopped.set()
