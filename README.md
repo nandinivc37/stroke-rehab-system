@@ -70,8 +70,12 @@ connect its Rehabilitation page to the FastAPI backend:
    WebSocket. Webcam capture and MediaPipe inference remain on the desktop;
    only the 33-point pose landmarks, timestamps and image dimensions are
    sent to the API. The backend runs the session analyzer, stores the
-   completed summary, and evaluates the adaptive policy. Any resulting
-   adaptation proposal remains pending until a therapist reviews it.
+   completed summary, and evaluates the adaptive policy. The desktop also
+   retains its existing local analyzer during this transition for the
+   established camera overlay and reference display; the backend analysis
+   is shown separately and is used for the persisted session summary.
+   Any resulting adaptation proposal remains pending until a therapist
+   reviews it.
 5. Disconnecting returns the Rehabilitation page to local mode. Other
    desktop pages remain on the local database during this transition; the
    API-backed patient/assessment administration screens and adaptation-
