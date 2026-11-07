@@ -49,7 +49,8 @@ def test_stream_rejects_unknown_session_after_authentication(api_client):
     assert closed.value.code == 4404
 
 
-def test_stream_returns_analysis_for_active_session(api_client):
+def test_stream_returns_analysis_and_enforces_rate_limit(api_client, monkeypatch):
+    monkeypatch.setenv("NARS_WS_MAX_FRAMES_PER_SECOND", "1")
     # Create a patient and approved exercise prescription through the public API.
     patient = api_client.post(
         "/api/v1/patients", json={"name": "WebSocket Stream Patient"}
@@ -103,6 +104,14 @@ def test_stream_returns_analysis_for_active_session(api_client):
         assert result["type"] == "analysis"
         assert result["data"]["status"] == "no_pose"
         assert result["data"]["reps"] == 0
+        ws.send_json({
+            "type": "frame",
+            "frame": {"timestamp_s": 1.0, "pose_landmarks": None},
+        })
+        assert ws.receive_json()["code"] == "rate_limit_exceeded"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4429
 
     cancelled = api_client.delete(f"/api/v1/sessions/{session_id}")
     assert cancelled.status_code == 200
