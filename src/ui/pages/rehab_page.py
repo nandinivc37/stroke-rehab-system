@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
 import logging
 
 from src.adaptation.workflow import propose_after_session
+from src.api.remote_session import RemoteRehabSession, RemoteSessionError
+from src.api.client import APIClientError
 from src.database.db import (
     SESSION_STATUS_APP_CLOSED,
     get_active_prescription,
@@ -36,6 +38,8 @@ from src.ui.live_pose_widget import (
 
 class RehabPage(QWidget):
 
+    remote_stream_error = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
 
@@ -47,6 +51,9 @@ class RehabPage(QWidget):
         self.current_side = "LEFT"
         self.last_session_id = None
         self.last_adaptation = None
+        self.api_client = None
+        self.remote_session = None
+        self.remote_stream_error.connect(self._handle_remote_stream_error)
 
         self.reference_widget = None
         self.live_widget = None
