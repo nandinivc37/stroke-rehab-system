@@ -40,6 +40,7 @@ from src.ui.live_pose_widget import (
 class RehabPage(QWidget):
 
     remote_stream_error = pyqtSignal(str)
+    remote_analysis = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -55,6 +56,7 @@ class RehabPage(QWidget):
         self.api_client = None
         self.remote_session = None
         self.remote_stream_error.connect(self._handle_remote_stream_error)
+        self.remote_analysis.connect(self._handle_remote_analysis)
 
         self.reference_widget = None
         self.live_widget = None
@@ -591,6 +593,7 @@ class RehabPage(QWidget):
             try:
                 self.remote_session = RemoteRehabSession(
                     self.api_client,
+                    on_analysis=lambda data: self.remote_analysis.emit(data),
                     on_error=lambda error: self.remote_stream_error.emit(str(error)),
                 )
                 self.remote_session.start(self.current_patient_id)
@@ -612,6 +615,7 @@ class RehabPage(QWidget):
             parameters=self.current_parameters,
         )
         if self.remote_session is not None:
+            self.live_widget.enable_remote_analysis(True)
             self.live_widget.pose_frame_ready.connect(
                 self._submit_remote_pose_frame
             )
@@ -686,6 +690,10 @@ class RehabPage(QWidget):
             self.remote_session.submit_frame(payload)
         except RemoteSessionError as error:
             self.remote_stream_error.emit(str(error))
+
+    def _handle_remote_analysis(self, data):
+        if self.live_widget is not None:
+            self.live_widget.set_remote_analysis(data)
 
     def _handle_remote_stream_error(self, message):
         self.session_status.setText(
