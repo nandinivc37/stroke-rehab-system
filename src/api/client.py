@@ -138,6 +138,12 @@ class NARSAPIClient:
             "POST", f"/api/v1/sessions/{session_id}/frames", json=payload
         )
 
+    def evaluate_adaptation(self, patient_id, session_id):
+        return self._request(
+            "POST",
+            f"/api/v1/patients/{int(patient_id)}/sessions/{int(session_id)}/adaptation/evaluate",
+        )
+
     def complete_session(self, session_id):
         session_id = self._session_path_id(session_id)
         return self._request(
