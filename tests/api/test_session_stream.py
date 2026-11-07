@@ -98,7 +98,7 @@ def test_stream_returns_analysis_and_enforces_rate_limit(api_client, monkeypatch
     ) as ws:
         ws.send_json({"type": "authenticate", "access_token": token})
         assert ws.receive_json()["type"] == "authenticated"
-        ws.send_text('{"type":"frame","padding":"' + ("x" * 2048) + ''}')
+        ws.send_text("x" * 2048)
         assert ws.receive_json()["code"] == "message_too_large"
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_json()
