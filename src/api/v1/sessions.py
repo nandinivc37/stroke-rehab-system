@@ -1,6 +1,8 @@
 """Landmark-streaming rehabilitation session endpoints."""
 
 import asyncio
+import os
+from time import monotonic
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
@@ -153,6 +155,12 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
 
         await websocket.send_json({"type": "authenticated", "user_id": user["user_id"]})
 
+        max_frames_per_second = int(os.getenv("NARS_WS_MAX_FRAMES_PER_SECOND", "30"))
+        if max_frames_per_second < 1:
+            max_frames_per_second = 30
+        rate_window_started = monotonic()
+        frames_in_window = 0
+
         while True:
             message = await websocket.receive_json()
             if not isinstance(message, dict) or message.get("type") != "frame":
@@ -162,6 +170,21 @@ async def stream_pose_frames(websocket: WebSocket, session_id: str):
                     "detail": "Expected a frame message.",
                 })
                 continue
+
+            now = monotonic()
+            if now - rate_window_started >= 1.0:
+                rate_window_started = now
+                frames_in_window = 0
+            frames_in_window += 1
+            if frames_in_window > max_frames_per_second:
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "rate_limit_exceeded",
+                    "detail": "Frame rate limit exceeded for this connection.",
+                })
+                await websocket.close(code=4429, reason="Frame rate limit exceeded.")
+                return
+
             try:
                 frame = PoseFrameCreate.model_validate(message.get("frame", {}))
                 frame_session = factory()
