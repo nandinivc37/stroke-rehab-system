@@ -18,6 +18,7 @@ from src.ui.pages.patients_page import PatientsPage
 from src.ui.pages.assessment_page import AssessmentPage
 from src.ui.pages.rehab_page import RehabPage
 from src.ui.pages.progress_page import ProgressPage
+from src.ui.api_connection_dialog import APIConnectionDialog
 
 
 REHAB_PAGE_INDEX = 3
@@ -28,6 +29,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.api_client = None
         self.setWindowTitle("Stroke Rehab System")
         self.setMinimumSize(1100, 700)
 
@@ -113,6 +115,11 @@ class MainWindow(QMainWindow):
             therapist_label
         )
 
+        self.api_button = QPushButton("Connect to API")
+        self.api_button.setObjectName("navButton")
+        self.api_button.clicked.connect(self.toggle_api_connection)
+        sidebar_layout.addWidget(self.api_button)
+
         # -----------------------------------------
         # Page container
         # -----------------------------------------
@@ -190,7 +197,40 @@ class MainWindow(QMainWindow):
             logging.getLogger(__name__).exception(
                 "Could not save the interrupted session"
             )
+        if self.api_client is not None:
+            self.api_client.close()
+            self.api_client = None
         super().closeEvent(event)
+
+    def toggle_api_connection(self):
+        if self.api_client is not None:
+            if self.rehab_page.live_widget is not None:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Session Active",
+                    "End the rehabilitation session before disconnecting the API.",
+                )
+                return
+            self.rehab_page.set_api_client(None)
+            self.api_client.close()
+            self.api_client = None
+            self.api_button.setText("Connect to API")
+            return
+
+        dialog = APIConnectionDialog(self)
+        if dialog.exec():
+            client = dialog.api_client
+            try:
+                self.rehab_page.set_api_client(client)
+            except Exception as error:
+                client.close()
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(
+                    self, "API Connection Failed", str(error)
+                )
+                return
+            self.api_client = client
+            self.api_button.setText("Disconnect API")
 
     def refresh_patient_lists(self):
         """Reload pages after a registration, without an app restart.
