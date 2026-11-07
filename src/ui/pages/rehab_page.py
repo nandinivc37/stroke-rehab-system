@@ -1,5 +1,6 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -703,6 +704,9 @@ class RehabPage(QWidget):
         stats = self.live_widget.get_stats()
 
         self.live_widget.stop()
+        if self.remote_session is not None:
+            # Deliver queued capture-thread results before flushing the network queue.
+            QApplication.processEvents()
 
         self._teardown_session_widgets(
             "Camera stopped.\n"
