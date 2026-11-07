@@ -35,6 +35,7 @@ class RemoteRehabSession:
         self._state = "IDLE"
         self._frames_submitted = 0
         self._last_error = None
+        self._dropped_frames = 0
 
     @property
     def state(self):
@@ -53,6 +54,13 @@ class RemoteRehabSession:
     @property
     def last_error(self):
         return self._last_error
+
+    @property
+    def dropped_frames(self):
+        with self._lock:
+            stream = self.stream
+            saved = self._dropped_frames
+        return saved + (stream.dropped_frames if stream is not None else 0)
 
     def start(self, patient_id):
         with self._lock:
@@ -136,6 +144,8 @@ class RemoteRehabSession:
         try:
             if stream is not None:
                 stream.flush(timeout=15.0)
+                with self._lock:
+                    self._dropped_frames = stream.dropped_frames
                 stream.stop()
             result = self.api_client.complete_session(session_id)
         except Exception as exc:
