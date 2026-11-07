@@ -25,6 +25,9 @@ from src.database import db
 from src.database.repositories import adaptation_repository
 from src.exercises.catalogue import get_exercise_config
 
+from sqlalchemy import select
+from src.database.models import ExerciseRecommendation, RehabSession
+
 STATUS_PENDING = "PENDING"
 STATUS_APPROVED = "APPROVED"
 STATUS_REJECTED = "REJECTED"
@@ -33,6 +36,63 @@ STATUS_SUPERSEDED = "SUPERSEDED"
 
 class AdaptationError(RuntimeError):
     pass
+
+
+def _active_prescription(patient_id, database_session=None):
+    """Return the latest approved prescription in the selected DB backend."""
+    if database_session is None:
+        return db.get_active_prescription(patient_id)
+
+    row = database_session.scalars(
+        select(ExerciseRecommendation)
+        .where(
+            ExerciseRecommendation.patient_id == patient_id,
+            ExerciseRecommendation.status == STATUS_APPROVED,
+        )
+        .order_by(ExerciseRecommendation.recommendation_id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+
+    prescription = {
+        column.name: getattr(row, column.name)
+        for column in ExerciseRecommendation.__table__.columns
+    }
+    try:
+        prescription["parameters"] = json.loads(
+            prescription.get("parameters_json") or "{}"
+        )
+    except (TypeError, ValueError):
+        prescription["parameters"] = {}
+    return prescription
+
+
+def _patient_sessions(
+    patient_id, database_session=None, exercise_id=None, side=None
+):
+    """Return a patient's sessions as dictionaries for the controller."""
+    if database_session is None:
+        return db.get_sessions(patient_id, exercise_id, side)
+
+    statement = select(RehabSession).where(
+        RehabSession.patient_id == patient_id
+    )
+    if exercise_id is not None:
+        statement = statement.where(RehabSession.exercise_id == exercise_id)
+    if side is not None:
+        statement = statement.where(RehabSession.affected_side == side)
+    statement = statement.order_by(
+        RehabSession.session_date, RehabSession.session_id
+    )
+    rows = database_session.scalars(statement).all()
+    return [
+        {
+            column.name: getattr(row, column.name)
+            for column in RehabSession.__table__.columns
+        }
+        for row in rows
+    ]
 
 
 def propose_after_session(patient_id, session_id, policy=None, database_session=None):
