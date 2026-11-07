@@ -494,9 +494,15 @@ class RehabPage(QWidget):
         if config is None or not config.implemented:
             self._clear_prescription(
                 f"Exercise: {prescription['exercise']}",
-                f"'{prescription['exercise']}' is approved but is not "
-                "supported by the movement-analysis system. Approve a "
-                "supported exercise on the Assessment page.",
+                (
+                    f"'{prescription['exercise']}' is approved but is not "
+                    "supported by the movement-analysis system. Ask a "
+                    "therapist to approve a supported exercise in the API."
+                    if self.api_client is not None else
+                    f"'{prescription['exercise']}' is approved but is not "
+                    "supported by the movement-analysis system. Approve a "
+                    "supported exercise on the Assessment page."
+                ),
             )
             return
 
