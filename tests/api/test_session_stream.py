@@ -51,6 +51,7 @@ def test_stream_rejects_unknown_session_after_authentication(api_client):
 
 def test_stream_returns_analysis_and_enforces_rate_limit(api_client, monkeypatch):
     monkeypatch.setenv("NARS_WS_MAX_FRAMES_PER_SECOND", "1")
+    monkeypatch.setenv("NARS_WS_MAX_MESSAGE_BYTES", "1024")
     # Create a patient and approved exercise prescription through the public API.
     patient = api_client.post(
         "/api/v1/patients", json={"name": "WebSocket Stream Patient"}
@@ -90,6 +91,18 @@ def test_stream_returns_analysis_and_enforces_rate_limit(api_client, monkeypatch
     assert started.status_code == 201
     session_id = started.json()["session_id"]
     token = _token(api_client, "streaming-therapist", patient_id=patient_id)
+
+    # Reject oversized client messages before parsing or schema validation.
+    with api_client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/stream"
+    ) as ws:
+        ws.send_json({"type": "authenticate", "access_token": token})
+        assert ws.receive_json()["type"] == "authenticated"
+        ws.send_text('{"type":"frame","padding":"' + ("x" * 2048) + ''}')
+        assert ws.receive_json()["code"] == "message_too_large"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 1009
 
     with api_client.websocket_connect(
         f"/api/v1/sessions/{session_id}/stream"
