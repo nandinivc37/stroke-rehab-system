@@ -33,6 +33,7 @@ from src.exercises.angles import PLANE_CALIBRATING, PLANE_DEPTH_AMBIGUOUS
 from src.exercises.legacy import LEGACY_SHOULDER_RAISE_2D
 from src.pose_estimation.config import pose_settings
 from src.validation.landmark_recorder import LandmarkRecorder
+from src.api.client import pose_frame_payload
 
 logger = logging.getLogger(__name__)
 
@@ -68,36 +69,6 @@ PLANE_HINTS = {
 # (python -m src.validation.flexion_trace <file>).
 DEBUG_OVERLAY_ENV = "REHAB_DEBUG_OVERLAY"
 RECORD_LANDMARKS_ENV = "REHAB_RECORD_LANDMARKS"
-
-
-def _pose_frame_payload(results, timestamp_s, image_width, image_height):
-    """Serialize the client-side MediaPipe result for the API landmark contract."""
-    def serialize(collection):
-        if collection is None:
-            return None
-        return [
-            {
-                "x": float(point.x),
-                "y": float(point.y),
-                "z": float(point.z),
-                "visibility": float(getattr(point, "visibility", 1.0)),
-                "presence": (
-                    float(point.presence)
-                    if getattr(point, "presence", None) is not None else None
-                ),
-            }
-            for point in collection.landmark
-        ]
-
-    return {
-        "timestamp_s": float(timestamp_s),
-        "pose_landmarks": serialize(getattr(results, "pose_landmarks", None)),
-        "pose_world_landmarks": serialize(
-            getattr(results, "pose_world_landmarks", None)
-        ),
-        "image_width": int(image_width),
-        "image_height": int(image_height),
-    }
 
 
 def _deg(value):
@@ -555,6 +526,7 @@ class LivePoseWidget(QWidget):
         # A Qt slot must never raise: PyQt6 aborts the whole application
         # on an unhandled exception. Errors are logged, counted in the
         # session summary, and shown; no substitute values are produced.
+        self._last_pose_payload = None
         try:
             display, status = self._process_frame(frame, timestamp)
             self.consecutive_errors = 0
@@ -626,7 +598,7 @@ class LivePoseWidget(QWidget):
         t0 = time.perf_counter()
         results = self.pose.process(rgb)
         t1 = time.perf_counter()
-        self._last_pose_payload = _pose_frame_payload(
+        self._last_pose_payload = pose_frame_payload(
             results, timestamp, frame.shape[1], frame.shape[0]
         )
 
