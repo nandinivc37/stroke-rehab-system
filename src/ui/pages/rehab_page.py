@@ -453,7 +453,20 @@ class RehabPage(QWidget):
 
         self.current_patient_id = patient_id
 
-        prescription = get_active_prescription(patient_id)
+        try:
+            if self.api_client is not None:
+                recommendations = self.api_client.list_recommendations(
+                    patient_id, status_filter="APPROVED"
+                )
+                prescription = recommendations[0] if recommendations else None
+            else:
+                prescription = get_active_prescription(patient_id)
+        except APIClientError as error:
+            self._clear_prescription(
+                "Exercise: API unavailable",
+                f"Could not load the approved prescription: {error}",
+            )
+            return
 
         if prescription is None:
             self._clear_prescription(
@@ -479,8 +492,19 @@ class RehabPage(QWidget):
         side = prescription.get("affected_side")
 
         if not side:
-            areas = get_affected_areas(patient_id)
-            side = areas[0][1] if areas else "LEFT"
+            if self.api_client is not None:
+                try:
+                    areas = self.api_client.list_affected_areas(patient_id)
+                    side = areas[0]["side"] if areas else "LEFT"
+                except APIClientError as error:
+                    self._clear_prescription(
+                        f"Exercise: {prescription['exercise']}",
+                        f"Could not load the affected side: {error}",
+                    )
+                    return
+            else:
+                areas = get_affected_areas(patient_id)
+                side = areas[0][1] if areas else "LEFT"
 
         side = side.upper()
 
