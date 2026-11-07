@@ -43,6 +43,9 @@ class _SessionState:
         self.prescription = prescription
         self.config = config
         self.analyzer = analyzer
+        # Each analyzer has independent mutable state. Serialize only frames and
+        # lifecycle operations for this session, never for every active patient.
+        self.lock = RLock()
         self.last_timestamp = None
         self.frame_count = 0
         self.last_activity_monotonic = monotonic()
@@ -70,17 +73,26 @@ class SessionManager:
     def cleanup_idle_sessions(self, database_session=None):
         """Expire abandoned in-process analyzers and persist their terminal state."""
         now = monotonic()
-        expired = []
         with self._lock:
-            for session_id, state in list(self._sessions.items()):
-                if now - state.last_activity_monotonic >= self.idle_timeout_seconds:
-                    expired.append((session_id, state))
+            candidates = list(self._sessions.items())
+
+        expired = []
+        for session_id, state in candidates:
+            # Do not hold the manager lock while waiting for an in-flight frame.
+            with state.lock:
+                if now - state.last_activity_monotonic < self.idle_timeout_seconds:
+                    continue
+                with self._lock:
+                    if self._sessions.get(session_id) is not state:
+                        continue
                     del self._sessions[session_id]
+                expired.append((session_id, state.frame_count))
+
         if database_session is not None:
-            for session_id, state in expired:
+            for session_id, frame_count in expired:
                 live_session_repository.finish_live_session(
                     database_session, session_id, "INTERRUPTED",
-                    frames_received=state.frame_count,
+                    frames_received=frame_count,
                 )
         return len(expired)
 
@@ -190,18 +202,31 @@ class SessionManager:
         """Return whether an in-memory analyzer is active for this session."""
         with self._lock:
             state = self._sessions.get(session_id)
-            return (
-                state is not None
-                and monotonic() - state.last_activity_monotonic < self.idle_timeout_seconds
-            )
+        if state is None:
+            return False
+        with state.lock:
+            with self._lock:
+                return (
+                    self._sessions.get(session_id) is state
+                    and monotonic() - state.last_activity_monotonic < self.idle_timeout_seconds
+                )
 
     def add_frame(self, session_id, frame, database_session=None):
         with self._lock:
             state = self._sessions.get(session_id)
-            if state is None:
-                raise SessionNotFoundError("Active session was not found.")
+        if state is None:
+            raise SessionNotFoundError("Active session was not found.")
+
+        # Inference and analyzer mutation are protected per session. Other
+        # patients can continue processing frames concurrently.
+        with state.lock:
+            with self._lock:
+                if self._sessions.get(session_id) is not state:
+                    raise SessionNotFoundError("Active session was not found.")
             if monotonic() - state.last_activity_monotonic >= self.idle_timeout_seconds:
-                del self._sessions[session_id]
+                with self._lock:
+                    if self._sessions.get(session_id) is state:
+                        del self._sessions[session_id]
                 if database_session is not None:
                     live_session_repository.finish_live_session(
                         database_session, session_id, "INTERRUPTED",
@@ -217,19 +242,12 @@ class SessionManager:
                 )
 
             if frame.image_width and frame.image_height:
-                state.analyzer.set_image_size(
-                    frame.image_width, frame.image_height
-                )
+                state.analyzer.set_image_size(frame.image_width, frame.image_height)
 
             results = self._pose_results(frame)
-            if results is None:
-                analysis = state.analyzer.update(
-                    None, timestamp=frame.timestamp_s
-                )
-            else:
-                analysis = state.analyzer.update(
-                    results, timestamp=frame.timestamp_s
-                )
+            analysis = state.analyzer.update(
+                results, timestamp=frame.timestamp_s
+            )
             state.last_timestamp = frame.timestamp_s
             state.frame_count += 1
             state.last_activity_monotonic = monotonic()
@@ -244,15 +262,22 @@ class SessionManager:
     def complete(self, session_id, database_session=None):
         with self._lock:
             state = self._sessions.get(session_id)
-            if state is None:
-                raise SessionNotFoundError("Active session was not found.")
+        if state is None:
+            raise SessionNotFoundError("Active session was not found.")
+
+        with state.lock:
+            with self._lock:
+                if self._sessions.get(session_id) is not state:
+                    raise SessionNotFoundError("Active session was not found.")
             if state.frame_count == 0:
                 raise SessionValidationError(
                     "A session with no received frames cannot be saved."
                 )
 
             if monotonic() - state.last_activity_monotonic >= self.idle_timeout_seconds:
-                del self._sessions[session_id]
+                with self._lock:
+                    if self._sessions.get(session_id) is state:
+                        del self._sessions[session_id]
                 if database_session is not None:
                     live_session_repository.finish_live_session(
                         database_session, session_id, "INTERRUPTED",
@@ -279,12 +304,13 @@ class SessionManager:
                     prescription_id=state.prescription["recommendation_id"],
                     session_status=db.SESSION_STATUS_COMPLETE,
                 )
-            if database_session is not None:
                 live_session_repository.finish_live_session(
                     database_session, session_id, "COMPLETED",
                     frames_received=state.frame_count,
                 )
-            del self._sessions[session_id]
+            with self._lock:
+                if self._sessions.get(session_id) is state:
+                    del self._sessions[session_id]
 
             return {
                 "session_id": session_db_id,
@@ -298,14 +324,21 @@ class SessionManager:
     def cancel(self, session_id, database_session=None):
         with self._lock:
             state = self._sessions.get(session_id)
-            if state is None:
-                raise SessionNotFoundError("Active session was not found.")
+        if state is None:
+            raise SessionNotFoundError("Active session was not found.")
+
+        with state.lock:
+            with self._lock:
+                if self._sessions.get(session_id) is not state:
+                    raise SessionNotFoundError("Active session was not found.")
             if database_session is not None:
                 live_session_repository.finish_live_session(
                     database_session, session_id, "CANCELLED",
                     frames_received=state.frame_count,
                 )
-            del self._sessions[session_id]
+            with self._lock:
+                if self._sessions.get(session_id) is state:
+                    del self._sessions[session_id]
             return {"session_id": session_id, "status": "CANCELLED"}
 
 
